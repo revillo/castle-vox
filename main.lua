@@ -92,7 +92,7 @@ function randomizeGrid(grid)
       if y == 16 then
         layer[x][y] = {0.3, 0.2, 0.0, 1.0}
       elseif dist < 3 then
-        --layer[x][y] = {0.3, 0.6, 0.2, 1.0}
+        layer[x][y] = {0.3, 0.6, 0.2, 1.0}
       end
       
     end
@@ -137,14 +137,12 @@ end
 function makeShader()
 
   local vert = [[
-    extern vec2 scale;
     varying vec3 pos;
     varying float shade;
     
     vec4 position(mat4 transform_projection, vec4 vertex_position)
     {
         vec4 vp = vertex_position;
-        vp.xy *= scale;
         pos = vertex_position.xyz;
         return transform_projection * vp;
     }
@@ -486,11 +484,15 @@ function makeShader()
         vec4 bounceSample = trace(pos + bounceDir * 0.01, bounceDir, p2, n2, hit, 64);
         float spec = pow(max(0.0, dot(bounceDir, lightDir)), 10.0);
         
+        if (shade < 0.01) {
+          spec = 0.0;
+        }
+        
         //Apply Specular
         color.rgb += bounceSample.rgb * 0.1 + spec * vec3(1.0, 1.0, 0.9);
 
         //Apply Shading
-        color.rgb *= (aoColor * (shade * 0.2 + 0.8));
+        color.rgb *= (aoColor * (shade * 0.3 + 0.7));
         
         return color;
     }
@@ -513,7 +515,8 @@ function draw3D(grid)
   
   love.graphics.setColor({1,1,1,1});
   love.graphics.setShader(assets.rayShader);
-  assets.rayShader:send("scale", {380, 380});
+  --assets.rayShader:send("scale", {380, 380});
+  --assets.rayShader:send("scale", {1, 1});
   --assets.rayShader:send("offset", state.offset3D);
   
   --tempHeadMat = state.headMatrix:transpose(tempHeadMat);
@@ -526,7 +529,7 @@ function draw3D(grid)
     assets.rayShader:send("grid_"..z, grid.layers[z].gpu);
   end
   
-  love.graphics.draw(assets.quadMesh, 412, 24);
+  love.graphics.draw(assets.quadMesh, 412, 24, 0, 380, 380);
   love.graphics.setShader();
   
 end
