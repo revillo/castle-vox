@@ -160,12 +160,17 @@ function makeShader()
     varying float shade;
     uniform mat4 headMatrix;
     
-    vec4 sampleGrid(float z, vec2 uv)
+    vec4 sampleGrid(vec3 pos)
     {
+    
+      float z = pos.z;
+      vec2 uv = (floor(pos.xy) + vec2(0.5, 0.5)) / 16.0;
       
-      if (z < 0.0 || z > 16.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0 || uv.y > 1.0) {
+
+      if (z < 0.0 || z > 16.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
         return vec4(0.0);
       }
+      
      
       
       if (z < 8.0) {
@@ -269,9 +274,9 @@ function makeShader()
       } else if (d < 0.0) {
         t =  abs(fract(v) / d);
       } else {
-        t =  10000.0;
+        t = 100.0;
       }
-            
+       
       return t;
     }
     
@@ -291,8 +296,8 @@ function makeShader()
         normal = vec3(0.0, 0.0, -sign(dir.z));
       }
       
-       return (pos + dir * (t + 0.001));
        //return (pos + dir * (t));
+       return (pos + dir * (t + 0.001));
 
     }
     
@@ -325,13 +330,12 @@ function makeShader()
       
       for (int i = 0; i < tMax; i++) {
         pos = advance(pos, dir, normal);
-         
-        vec4 sample = sampleGrid(pos.z, pos.xy / 16.0);  
-
+        vec4 sample = sampleGrid(pos);  
+        
         if (sample.a > 0.1) {
           //Double check normal
           vec3 p2 = pos + normal * 0.5;
-          vec4 s2 = sampleGrid(p2.z, p2.xy / 16.0);
+          vec4 s2 = sampleGrid(p2);
           if (s2.a > 0.1) {
             p2 = pos - normal * 0.1;
             normal = getNormal(p2, dir);
@@ -358,26 +362,6 @@ function makeShader()
       return vec4(vec3(0.4, 0.7, 1.0) * (-dir.y * 0.3 + 0.7), 1.0);
     }
     
-    vec4 traceBrute(vec3 origin, vec3 dir) {
-      
-       vec3 pos = origin;
-       vec3 step = dir / 10.0;
-
-       
-        for (int i = 0; i < 320; i++) {
-
-          pos += step;
-          vec4 sample = sampleGrid(pos.z, pos.xy / 16.0);  
-
-          if (sample.a > 0.1) {
-            return sample;
-          }
-          
-        }
-        
-      return vec4(dir * 0.2 + vec3(0.1), 1.0);
-    
-    }
        
     #define PI 3.14159
     void traceAO(in vec3 origin, in vec3 normal, inout vec3 outColor, float quality) {
