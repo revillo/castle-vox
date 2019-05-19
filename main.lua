@@ -1,4 +1,4 @@
---castle://localhost:4000/main.lua
+--castle://localhost:4000/vox.castle
 
 local cpml = require("lib/cpml")
 local mat4 = cpml.mat4;
@@ -37,9 +37,11 @@ local client = love;
 function renderLayer(grid, z)
 
   local layer = grid.layers[z];
+  love.graphics.setBlendMode("replace", "premultiplied");  
+
+  --Per Layer
   love.graphics.setCanvas(layer.gpu);
   local w, h = grid.width, grid.height;
-  love.graphics.setBlendMode("replace", "premultiplied");  
   for x = 1,w do
   for y = 1,h do
     
@@ -48,12 +50,36 @@ function renderLayer(grid, z)
   end end
     
   love.graphics.setCanvas()
+  
+  
+  --Tiled
+  love.graphics.setCanvas(grid.gpu);
+  
+  --[[
+  for x = 1,w do
+  for y = 1,h do
+    
+    love.graphics.setColor(layer.cpu[x][y]);
+    love.graphics.rectangle("fill", x-1.1, (z-1) * grid.height + y-1.1, 1.1, 1.1);
+   end end
+  ]]
+  
+  love.graphics.setColor(1,1,1,1);
+  love.graphics.draw(layer.gpu, 0, (z-1) * 16);
+  love.graphics.setCanvas();
+  love.graphics.setBlendMode("alpha");
 
 end
 
 function randomizeGrid(grid) 
   
   local w, h = grid.width, grid.height;
+  
+  grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth);
+  grid.gpu:setWrap("clampzero", "clampzero");
+  grid.gpu:setFilter("nearest", "nearest");
+  
+  
   for z = 1,grid.depth do
     
     grid.layers[z] = {
@@ -148,124 +174,30 @@ function makeShader()
     }
   ]];
   
-  local imgs = "";
-  
-  for i = 1,16 do
-    imgs = imgs.."extern Image grid_"..tostring(i)..";\n";
-  end
-  
-  --Lawdy forgive me
-  local frag = imgs..[[
+  local frag = [[
     varying vec3 pos; 
     varying float shade;
     uniform mat4 headMatrix;
+    extern Image grid_1;
     
     vec4 sampleGrid(vec3 pos)
     {
-    
       float z = pos.z;
-      vec2 uv = (floor(pos.xy) + vec2(0.5, 0.5)) / 16.0;
       
-
-      if (z < 0.0 || z > 16.0 || uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+      if (z < 0.0 || z >= 16.0 || pos.x < 0.0 || pos.x >= 16.0 || pos.y < 0.0 || pos.y >= 16.0) {
         return vec4(0.0);
-      }
+      }      
       
-     
+      float layer = floor(z);
       
-      if (z < 8.0) {
-          
-          if (z < 4.0) {
-            
-            if (z < 2.0)  {
-              
-              if (z < 1.0) {
-                return Texel(grid_1, uv);
-              } else {
-                return Texel(grid_2, uv);
-              }
-              
-            } else {
-            
-              if (z < 3.0) {
-                return Texel(grid_3, uv);
-              } else {
-                return Texel(grid_4, uv);
-              }
-            
-            }
-            
-          } else {
-            
-             if (z < 6.0)  {
-              
-              if (z < 5.0) {
-                return Texel(grid_5, uv);
-              } else {
-                return Texel(grid_6, uv);
-              }
-              
-            } else {
-            
-              if (z < 7.0) {
-                return Texel(grid_7, uv);
-              } else {
-                return Texel(grid_8, uv);
-              }
-            
-            }
-            
-          }
-
-       
-      } else {
+      vec2 uv;
+      uv.x = (floor(pos.x) + 0.5) / 16.0;
+      uv.y = (floor(pos.y + layer * 16.0) + 0.5) / 256.0;   
       
-        if (z < 12.0) {
-            
-            if (z < 10.0)  {
-              
-              if (z < 9.0) {
-                return Texel(grid_9, uv);
-              } else {
-                return Texel(grid_10, uv);
-              }
-              
-            } else {
-            
-              if (z < 11.0) {
-                return Texel(grid_11, uv);
-              } else {
-                return Texel(grid_12, uv);
-              }
-            
-            }
-            
-          } else {
-            
-             if (z < 14.0)  {
-              
-              if (z < 13.0) {
-                return Texel(grid_13, uv);
-              } else {
-                return Texel(grid_14, uv);
-              }
-              
-            } else {
-            
-              if (z < 15.0) {
-                return Texel(grid_15, uv);
-              } else {
-                return Texel(grid_16, uv);
-              }
-            
-            }
-            
-          }
-      
-      }
+      return Texel(grid_1, uv);
     
     }
-    
+
     float dc(float v, float d) {
       
       float t;
@@ -280,13 +212,11 @@ function makeShader()
       return t;
     }
     
-    
-    
     //Advance ray into next unit cell
     vec3 advance(vec3 pos, vec3 dir, out vec3 normal) {
       
-       vec3 ds = vec3(dc(pos.x, dir.x), dc(pos.y, dir.y), dc(pos.z, dir.z));
-       float t = min(ds.z, min(ds.x, ds.y));
+      vec3 ds = vec3(dc(pos.x, dir.x), dc(pos.y, dir.y), dc(pos.z, dir.z));
+      float t = min(ds.z, min(ds.x, ds.y));
        
       if (ds.x < ds.y && ds.x < ds.z) {
         normal = vec3(-sign(dir.x), 0.0, 0.0);
@@ -347,7 +277,7 @@ function makeShader()
           
       }
       
-      /*
+      /* Ground Plane
       if (dir.y > 0.0) {
           normal = vec3(0.0, -1.0, 0.0);
           pos = pos + dir * abs(pos.y / dir.y);
@@ -499,19 +429,12 @@ function draw3D(grid)
   
   love.graphics.setColor({1,1,1,1});
   love.graphics.setShader(assets.rayShader);
-  --assets.rayShader:send("scale", {380, 380});
-  --assets.rayShader:send("scale", {1, 1});
-  --assets.rayShader:send("offset", state.offset3D);
   
-  --tempHeadMat = state.headMatrix:transpose(tempHeadMat);
   mat4.transpose(tempHeadMat, state.headMatrix);
-  --print(tempHeadMat:to_string());
 
   assets.rayShader:send("headMatrix", tempHeadMat);
   
-  for z = 1, 16 do
-    assets.rayShader:send("grid_"..z, grid.layers[z].gpu);
-  end
+  assets.rayShader:send("grid_1", grid.gpu);
   
   love.graphics.draw(assets.quadMesh, 412, 24, 0, 380, 380);
   love.graphics.setShader();
@@ -530,6 +453,8 @@ function drawGrid(grid)
     love.graphics.draw(grid.layers[z + 1].gpu, 24 + x * 100, 24 + y * 100, 0, 4, 4);
     
   end
+  
+ --love.graphics.draw(grid.gpu, 0, 0, 0, 1, 1);
   
   draw3D(grid);
 
@@ -568,7 +493,7 @@ function client.update(dt)
     headLook(state.headMatrix, eye, target, up);
    
 --   state.headMatrix:scale(state.headMatrix, vec3(1,1,-1));
- --   state.headMatrix:translate(state.headMatrix, eye);
+--   state.headMatrix:translate(state.headMatrix, eye);
  
  
       local mx, my = love.mouse.getPosition();
