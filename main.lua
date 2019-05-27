@@ -3,24 +3,23 @@
 local cpml = require("lib/cpml")
 local mat4 = cpml.mat4;
 local vec3 = cpml.vec3;
+local vec2 = cpml.vec2;
 
 function headLook(out, eye, look_at, up)
 	local z_axis = (look_at - eye):normalize()
-	local x_axis = z_axis:cross(up):normalize()--up:cross(z_axis):normalize() * vec3(-1, -1, -1);
-   
-  
+	local x_axis = z_axis:cross(up):normalize()--up:cross(z_axis):normalize() * vec3(-1, -1, -1);  
 	local y_axis = x_axis:cross(z_axis):normalize()
-  
-	out[1] = x_axis.x
-	out[2] = y_axis.x
-	out[3] = z_axis.x
+ 
+  out[1] = x_axis.x
+	out[2] = x_axis.y
+	out[3] = x_axis.z
 	out[4] = 0
-	out[5] = x_axis.y
+	out[5] = y_axis.x
 	out[6] = y_axis.y
-	out[7] = z_axis.y
+	out[7] = y_axis.z
 	out[8] = 0
-	out[9] = x_axis.z
-	out[10] = y_axis.z
+	out[9] = z_axis.x
+	out[10] = z_axis.y
 	out[11] = z_axis.z
 	out[12] = 0
 	out[13] = eye.x
@@ -75,7 +74,7 @@ function randomizeGrid(grid)
   
   local w, h = grid.width, grid.height;
   
-  grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth);
+  grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
   grid.gpu:setWrap("clampzero", "clampzero");
   grid.gpu:setFilter("nearest", "nearest");
   
@@ -83,7 +82,7 @@ function randomizeGrid(grid)
   for z = 1,grid.depth do
     
     grid.layers[z] = {
-      gpu = love.graphics.newCanvas(grid.width, grid.height),
+      gpu = love.graphics.newCanvas(grid.width, grid.height, {dpiscale=1}),
       cpu = {}
     };
     
@@ -116,9 +115,9 @@ function randomizeGrid(grid)
       local dist = vec3.dist(vec3(x, y, z), vec3(8, 12, 8.5));
       
       if y == 16 then
-        layer[x][y] = {0.3, 0.2, 0.0, 1.0}
+        layer[x][y] = {0.5, 0.4, 0.0, 1.0}
       elseif dist < 3 then
-        layer[x][y] = {0.3, 0.6, 0.2, 1.0}
+        layer[x][y] = {0.3, 0.8, 0.2, 1.0}
       end
       
     end
@@ -160,44 +159,39 @@ function makeQuad()
     return love.graphics.newMesh(vertices, "fan", "static")
 end
 
-function makeShader()
+function makeShaders()
 
-  local vert = [[
-    varying vec3 pos;
-    varying float shade;
-    
+  local vert = [[    
     vec4 position(mat4 transform_projection, vec4 vertex_position)
     {
-        vec4 vp = vertex_position;
-        pos = vertex_position.xyz;
-        return transform_projection * vp;
+        return transform_projection * vertex_position;
     }
   ]];
   
-  local frag = [[
-    varying vec3 pos; 
-    varying float shade;
-    uniform mat4 headMatrix;
+  local trace = [[
     extern Image grid_1;
-    
+    uniform float gridDim;
+    uniform mat4 headMatrix;
+
     vec4 sampleGrid(vec3 pos)
     {
       float z = pos.z;
       
-      if (z < 0.0 || z >= 16.0 || pos.x < 0.0 || pos.x >= 16.0 || pos.y < 0.0 || pos.y >= 16.0) {
+      if (z < 0.0 || z >= gridDim || pos.x < 0.0 || pos.x >= gridDim || pos.y < 0.0 || pos.y >= gridDim) {
         return vec4(0.0);
       }      
       
       float layer = floor(z);
       
       vec2 uv;
-      uv.x = (floor(pos.x) + 0.5) / 16.0;
-      uv.y = (floor(pos.y + layer * 16.0) + 0.5) / 256.0;   
+      uv.x = (floor(pos.x) + 0.5) / gridDim;
+      uv.y = (floor(pos.y + layer * gridDim) + 0.5) / (gridDim * gridDim);   
       
       return Texel(grid_1, uv);
     
     }
-
+    
+    
     float dc(float v, float d) {
       
       float t;
@@ -252,7 +246,6 @@ function makeShader()
       return normalize(d);
       
     }
-
     
     vec4 trace(vec3 origin, vec3 dir, out vec3 pos, out vec3 normal, out bool hit, int tMax) {
       
@@ -286,12 +279,55 @@ function makeShader()
       }*/
       
       hit = false;
-      
-      //return vec4(dir * 0.2 + vec3(0.1), 1.0);
-      //skycolor
-      return vec4(vec3(0.4, 0.7, 1.0) * (-dir.y * 0.3 + 0.7), 1.0);
+      return vec4(0.0);
     }
     
+    void getHeadRay(in vec2 uv, out vec3 origin, out vec3 dir) {
+      dir = vec3(uv * 2.0 - vec2(1.0), 1.0);
+      //dir.x *= -0.5;
+      //dir.y *= 0.5;
+      dir.xy *= 0.5;
+      dir = normalize(dir);
+      dir = normalize((headMatrix * vec4(dir, 0.0)).xyz);        
+      origin = headMatrix[3].xyz;
+    }
+            
+  ]];
+  
+  local queryFrag = trace..[[
+    
+    uniform vec2 queryUV;
+  
+    vec4 effect( vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords )
+    {
+    
+      vec3 origin,  dir;
+      getHeadRay(queryUV, origin, dir);
+      
+      vec3 position, normal;
+      bool hit;
+      trace(origin, dir, position, normal, hit, 128);
+      
+      position = floor(position) + vec3(0.5);
+      
+      if (hit) {
+        return vec4((position + normal) / gridDim, 1.0);
+      }
+      
+      return vec4(0.0);
+
+    }
+  ]];
+  
+  local renderFrag = trace..[[    
+    uniform vec3 lightDir;
+
+    vec4 getSkyColor(vec3 direction) 
+    {
+      
+      float t = dot(-direction, lightDir) * 0.3 + 0.7;
+      return vec4(mix(vec3(0.4, 0.7, 1.0), vec3(0.95, 0.9, 0.8),1.0-t), 1.0);
+    }
        
     #define PI 3.14159
     void traceAO(in vec3 origin, in vec3 normal, inout vec3 outColor, float quality) {
@@ -329,7 +365,8 @@ function makeShader()
           //float weight = dot(direction, normal) * (1.0 - float(hit));
           float weight = dot(direction, normal);
           
-          vec3 envLight = vec3(-direction.y * 0.1 + 0.9);
+          vec3 envLight = getSkyColor(direction).rgb;//vec3(-direction.y * 0.1 + 0.9);
+          envLight = mix(envLight, vec3(1.0, 1.0, 1.0), 0.5);
           
           //Ambient Light
           color += envLight * weight  * (1.0 - float(hit));
@@ -348,17 +385,8 @@ function makeShader()
     vec4 effect( vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords )
     {
         
-        vec3 dir = vec3(texture_coords * 2.0 - vec2(1.0), 1.0);
-        dir.x *= -1.0;
-        
-        dir.xy *= 0.5;
-        
-        dir = normalize(dir);
-        
-        //vec3 origin = vec3(8.0, 8.0, -10.0) + offset;
-        dir = normalize((headMatrix * vec4(dir, 0.0)).xyz);
-        
-        vec3 origin = headMatrix[3].xyz;
+        vec3 origin, dir;
+        getHeadRay(texture_coords, origin, dir);
         
         vec3 normal;
         vec3 pos;
@@ -368,13 +396,13 @@ function makeShader()
         float hitDist = length(pos - origin);
         
         if (! hit) {
-          return color;
+          return getSkyColor(dir);
         }
         
        float shade = 1.0;
               
        //Directional Light
-        vec3 lightDir = normalize(vec3(1.0, -3.0, -2.0));
+        //vec3 lightDir = normalize(vec3(1.0, -3.0, -2.0));
         shade = max(0.0, dot(lightDir, normal));
 
         vec3 p2, n2;
@@ -388,14 +416,10 @@ function makeShader()
        vec3 aoColor = vec3(0.0);
        float aoQuality = clamp(1.0 - (hitDist / 20.0), 0.0, 1.0);
        traceAO(pos + normal * 0.01, normal, aoColor, aoQuality); 
-       //color =  clr * vec4(aoColor * (shade * 0.2 + 0.8), 1.0);
-               
-        //return vec4(normal * 0.5 + vec3(0.5), 1.0);
-        //return clr * shade;
-        
+ 
         //Specular
         vec3 bounceDir = reflect(dir, normal);
-        vec4 bounceSample = trace(pos + bounceDir * 0.01, bounceDir, p2, n2, hit, 64);
+        vec4 bounceSample = trace(pos + bounceDir * 0.01, bounceDir, p2, n2, hit, 32);
         float spec = pow(max(0.0, dot(bounceDir, lightDir)), 10.0);
         
         if (shade < 0.01) {
@@ -403,16 +427,16 @@ function makeShader()
         }
         
         //Apply Specular
-        color.rgb += bounceSample.rgb * 0.1 + spec * vec3(1.0, 1.0, 0.9);
+        color.rgb += bounceSample.rgb * bounceSample.a * 0.05 + spec * vec3(1.0, 1.0, 0.9);
 
         //Apply Shading
-        color.rgb *= (aoColor * (shade * 0.3 + 0.7));
+        color.rgb *= (aoColor * (shade * 0.2 + 0.8));
         
         return color;
     }
   ]];
   
-  return love.graphics.newShader(vert, frag)
+  return love.graphics.newShader(vert, renderFrag), love.graphics.newShader(vert, queryFrag);
   
 end
 
@@ -420,28 +444,40 @@ end
 local assets = {
   
   quadMesh = makeQuad(),
-  rayShader = makeShader()
 
 }
 
+assets.renderShader, assets.queryShader = makeShaders();
+
+
 local tempHeadMat = mat4();
-function draw3D(grid)
+local tempLightDir = vec3();
+
+function drawGrid3D(grid)
   
   love.graphics.setColor({1,1,1,1});
-  love.graphics.setShader(assets.rayShader);
+  love.graphics.setShader(assets.renderShader);
   
   mat4.transpose(tempHeadMat, state.headMatrix);
 
-  assets.rayShader:send("headMatrix", tempHeadMat);
+  assets.renderShader:send("headMatrix", tempHeadMat);
+  assets.renderShader:send("gridDim", grid.width);
+  assets.renderShader:send("grid_1", grid.gpu);
+
+  tempLightDir = vec3(1.0, -3.0, -2.0):normalize();
   
-  assets.rayShader:send("grid_1", grid.gpu);
+  assets.renderShader:send("lightDir", {tempLightDir.x, tempLightDir.y, tempLightDir.z});
   
-  love.graphics.draw(assets.quadMesh, 412, 24, 0, 380, 380);
+  
+  local vp = state.ui.viewport;
+  
+  love.graphics.draw(assets.quadMesh, vp.x, vp.y, 0, vp.w, vp.h);
   love.graphics.setShader();
   
 end
+local queryCanvas = love.graphics.newCanvas(1, 1, {dpiscale=1});
 
-function drawGrid(grid)
+function drawGrid2D(grid)
   
   love.graphics.setColor(1,1,1,1);
   
@@ -454,85 +490,193 @@ function drawGrid(grid)
     
   end
   
+  love.graphics.draw(queryCanvas, 0, 0, 0, 10, 10);
+  
  --love.graphics.draw(grid.gpu, 0, 0, 0, 1, 1);
   
-  draw3D(grid);
 
 end
 
 function client.draw()
   
-  state.offset3D[3] = math.sin(love.timer.getTime()) * 10.0 + 10.0;
-  state.offset3D[2] = math.sin(love.timer.getTime() * 2) * 2;
+  drawGrid2D(state.grid);
+  drawGrid3D(state.grid);
+
+end
+
+function client.wheelmoved(x, y)
   
-  drawGrid(state.grid);
+  state.cameraZoom = cpml.utils.clamp(state.cameraZoom - y, 5.0, 60.0);
+  updateCamera3D(0,0);
+
+end
+
+function client.mousepressed(x, y, button)
+  
+  if (button == 1) then
+    paint3D(x, y);
+  end
+ 
+end
+
+function client.mousemoved(x,y, dx, dy)
+  
+  if (love.mouse.isDown(2)) then
+    updateCamera3D(dx, dy);
+  end
+  
+end
+
+function updateScript(script, dt)
+
+  --local prevGrid = state.grid.layers;
+
+end
+
+function updatePaint2D()
+  local mx, my = love.mouse.getPosition();
+  
+  
+  local ix, iy = (mx - 24) / 100, (my - 24)/100;
+    
+    if (ix >= 4 or iy >= 4) then
+      return;
+    end
+    
+    local z = math.floor(iy) * 4 + math.floor(ix) + 1;
+    
+    
+    local px, py = (ix - math.floor(ix)) * 25, (iy - math.floor(iy)) * 25;
+    px, py = math.floor(px) + 1, math.floor(py) + 1;
+    
+    if (px > 16 or py > 16) then
+      return;
+    end
+    
+  if (love.mouse.isDown(1)) then
+    
+    state.grid.layers[z].cpu[px][py] = {
+      1, 1, 1, 1
+    }
+    
+    renderLayer(state.grid, z);
+    
+  elseif (love.mouse.isDown(2)) then
+  
+    state.grid.layers[z].cpu[px][py] = {
+      0, 0, 0, 0
+    }
+    
+    renderLayer(state.grid, z);
+    
+  end
+    
+end
+
+function addVoxel(grid, x, y, z) 
+  
+  if (not grid.layers[z]) or (not grid.layers[z].cpu[x]) or (not grid.layers[z].cpu[x][y]) then
+    return ;
+  end
+  
+  grid.layers[z].cpu[x][y] = {
+    1, 0, 0, 1
+  }
+    
+  renderLayer(grid, z);
 
 end
 
 
-function client.mousepressed(x, y)
+function paint3D(mx, my)
+
+  local vp = state.ui.viewport;
+  
+  local texCoord = {(mx - vp.x)/vp.w, (my - vp.y) / vp.h};
+  
+  if (texCoord[1] < 0 or texCoord[1] > 1) then
+    return;
+  end
+  
+  love.graphics.setCanvas(queryCanvas);
+  love.graphics.setColor(1,1,1,1);
   
   
+  love.graphics.setShader(assets.queryShader);
+  assets.queryShader:send("queryUV", texCoord);
+  mat4.transpose(tempHeadMat, state.headMatrix);
+
+  local grid = state.grid;
   
+  assets.queryShader:send("headMatrix", tempHeadMat);
+  assets.queryShader:send("gridDim", grid.width);
+  assets.queryShader:send("grid_1", grid.gpu);
+
+  love.graphics.draw(assets.quadMesh, 0, 0, 1, 1);
+  love.graphics.rectangle("fill", 0, 0, 1, 1);
+  
+  love.graphics.setCanvas();
+  love.graphics.setShader();
+
+  local r,g,b,a = queryCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
+  
+  if (a < 0.1) then return end;
+  
+  
+  local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
+
+  addVoxel(grid, x, y, z);
+  
+end
+
+local tempCameraPosition = vec3();
+function updateCamera3D(dx, dy)
+    
+  local cameraAngles = state.cameraAngles;
+  
+  local sensitivity = 0.01;
+  cameraAngles.x = cameraAngles.x - dx * sensitivity;
+  cameraAngles.y = cameraAngles.y - dy * sensitivity;
+  cameraAngles.y = cpml.utils.clamp(cameraAngles.y, -math.pi * 0.45, math.pi * 0.45);
+
+  tempCameraPosition.x = math.sin(cameraAngles.x) * math.cos(cameraAngles.y);
+  tempCameraPosition.z = math.cos(cameraAngles.x) * math.cos(cameraAngles.y);
+  tempCameraPosition.y = math.sin(cameraAngles.y);
+  
+  print(tempCameraPosition:to_string());
+  
+  local target = vec3(8.0, 9.0, 8.0);
+
+  tempCameraPosition = tempCameraPosition:scale(state.cameraZoom) + target;
+  local up = vec3(0.0, 1.0, 0.0);
+
+  headLook(state.headMatrix, tempCameraPosition, target, up);
+  
+end
+
+function spinCamera(dt)
+  local t = love.timer.getTime();
+    
+  --local eye = vec3(math.sin(t) * 20, 8.0, math.cos(t) * 20);
+  local radius = 28.0;
+   
+  local target = vec3(8.0, 8.0, 8.0);
+
+  local eye = vec3(math.sin(t) * radius, 0.0,  math.cos(t) * radius);
+  
+  eye = eye + target;
+  local up = vec3(0.0, 1.0, 0.0);
+  
+  headLook(state.headMatrix, eye, target, up);
+
 end
 
 function client.update(dt)
   
-    local t = love.timer.getTime();
-    
-   --local eye = vec3(math.sin(t) * 20, 8.0, math.cos(t) * 20);
-   local radius = 28.0;
-   
-   local target = vec3(8.0, 8.0, 8.0);
-
-    local eye = vec3(math.sin(t) * radius, 0.0,  math.cos(t) * radius);
-    
-    eye = eye + target;
-    local up = vec3(0.0, 1.0, 0.0);
-    
-    headLook(state.headMatrix, eye, target, up);
-   
---   state.headMatrix:scale(state.headMatrix, vec3(1,1,-1));
---   state.headMatrix:translate(state.headMatrix, eye);
- 
- 
-      local mx, my = love.mouse.getPosition();
-      
-      local ix, iy = (mx - 24) / 100, (my - 24)/100;
-      
-      if (ix >= 4 or iy >= 4) then
-        return;
-      end
-      
-      local z = math.floor(iy) * 4 + math.floor(ix) + 1;
-      
-      
-      local px, py = (ix - math.floor(ix)) * 25, (iy - math.floor(iy)) * 25;
-      px, py = math.floor(px) + 1, math.floor(py) + 1;
-      
-      if (px > 16 or py > 16) then
-        return;
-      end
-      
-    if (love.mouse.isDown(1)) then
-      
-      state.grid.layers[z].cpu[px][py] = {
-        1, 1, 1, 1
-      }
-      
-      renderLayer(state.grid, z);
-      
-    elseif (love.mouse.isDown(2)) then
-    
-      state.grid.layers[z].cpu[px][py] = {
-        0, 0, 0, 0
-      }
-      
-      renderLayer(state.grid, z);
-      
-    end
-    
-
+  --spinCamera();
+  
+  updatePaint2D();
+  
 end
 
 function client.load()
@@ -544,15 +688,26 @@ function client.load()
     height = 16
   }
   
-  state.offset3D = {
-    0, 0, 0
+  state.cameraAngles = vec2(0.0, 0.0);
+  state.cameraZoom = 30;
+ 
+  state.ui = {
+  
+    viewport = {
+      x = 412,
+      y = 24,
+      w = 380,
+      h = 380
+    }
+  
   }
   
   state.headMatrix = mat4();
   state.headMatrix:translate(state.headMatrix, vec3(8,8,-10));
   
-  print(state.headMatrix:to_string());
+  --print(state.headMatrix:to_string());
   
   randomizeGrid(state.grid);
+  updateCamera3D(0,0);
 
 end 
