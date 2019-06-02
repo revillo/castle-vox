@@ -340,7 +340,8 @@ function makeShaders()
     uniform bool showGrid;
     uniform int sampling;
     uniform vec2 viewportSize;
-    
+    uniform float reflectionScale;
+    uniform float sunScale;
     
     vec4 getSkyColor(vec3 direction) 
     {
@@ -348,8 +349,28 @@ function makeShaders()
       float t = dot(-direction, lightDir) * 0.3 + 0.7;
       return vec4(mix(vec3(0.4, 0.7, 1.0), vec3(0.95, 0.9, 0.8),1.0-t), 1.0);
     }
-       
+     
+    mat3 AAm3(vec4 axisAngle) {
+      vec3 axis = normalize(axisAngle.xyz);
+      float s = sin(axisAngle.w);
+      float c = cos(axisAngle.w);
+      float oc = 1.0 - c;
+      
+      return mat3(oc * axis.x * axis.x + c, oc * axis.x * axis.y - axis.z * s, oc * axis.z * axis.x + axis.y * s,
+        oc * axis.x * axis.y + axis.z * s, oc * axis.y * axis.y + c, oc * axis.y * axis.z - axis.x * s, 
+        oc * axis.z * axis.x - axis.y * s, oc * axis.y * axis.z + axis.x * s, oc * axis.z * axis.z + c 
+      );
+    }  
+    
     #define PI 3.14159
+
+    float randAngle (vec2 st) {
+      return fract(sin(dot(st.xy,
+                         vec2(12.9898,78.233)))*
+        43758.5453123) * PI;
+    }
+    vec2 globalUV;
+
     void traceAO(in vec3 origin, in vec3 normal, inout vec3 outColor, float quality) {
       
       vec3 randvec = normalize(vec3(normal.y, -normal.z, normal.x));
@@ -358,16 +379,15 @@ function makeShaders()
       
       vec3 color = vec3(0.0);
       
-      //Randomly rotate the alignment matrix to jitter samples
-      //aligned_mat = AAm3(vec4(normal, randAngle(uv))) * aligned_mat;
-
-      float step = 0.8 / (quality * 10.0 + 10.0);
+      aligned_mat = AAm3(vec4(normal, randAngle(globalUV))) * aligned_mat;
+      
+      float step = 0.8 / (quality * (sampling * 4.0) + 8.0);
         
         float weightSum = 0.0;
         
         //Hemisphere integral
-        for (float aa = 0.1; aa <= 0.9; aa += step) {
-          for (float bb = 0.1; bb <= 0.9; bb += step) {
+        for (float aa = 0.0; aa <= 1.0 - step; aa += step) {
+          for (float bb = step; bb <= 0.9; bb += step) {
 
            vec3 ray = vec3(
               cos(aa * PI * 2) * cos(bb * PI), 
@@ -380,10 +400,9 @@ function makeShaders()
            vec3 op, on;
            bool hit;
            
-          vec4 sample = trace(origin, direction, op, on, hit, 1);
+          vec4 sample = trace(origin, direction, op, on, hit, 1 + sampling);
           
-          //float weight = dot(direction, normal) * (1.0 - float(hit));
-          float weight = dot(direction, normal);
+          float weight = 1.0;//dot(direction, normal);
           
           vec3 envLight = getSkyColor(direction).rgb;//vec3(-direction.y * 0.1 + 0.9);
           envLight = mix(envLight, vec3(1.0, 1.0, 1.0), 0.5);
@@ -391,12 +410,25 @@ function makeShaders()
           //Ambient Light
           color += envLight * weight  * (1.0 - float(hit));
           //Bounce Light
-          color += sample.rgb * weight * float(hit) * 0.5;
+          color += sample.rgb * weight * float(hit) * 0.25;
 
           weightSum += weight;
 
           }      
         }
+        
+        vec3 p2, n2;
+        bool hit;
+        trace(origin + lightDir * 0.01, lightDir, p2, n2, hit, 64);
+        
+        //color = vec3(0.0);
+        //weightSum = 0.0;
+        color /= weightSum;
+        weightSum = 1.0;
+        
+       float sunWeight = sunScale;
+       weightSum += sunWeight;
+       color += sunWeight * vec3(0.95, 0.9, 0.8) * (1.0 - float(hit)) * max(0.0, dot(lightDir, normal));
         
         color /= weightSum; 
         outColor += color;
@@ -407,63 +439,67 @@ function makeShaders()
       return max(d.y + d.z, max(d.x + d.y, d.x + d.z));
     }
     
-    vec4 raycast(vec2 texture_coords, out bool isEdge)
-    {
-      vec3 origin, dir;
-        getHeadRay(texture_coords, origin, dir);
+    vec4 raycast(vec3 origin, vec3 dir, out bool isEdge, out vec3 pos, out vec3 normal, out bool hit) {
+ 
+        isEdge = false;
         
-        vec3 normal;
-        vec3 pos;
-        bool hit;
         vec4 color = trace(origin, dir, pos, normal, hit, 128);
         
         float hitDist = length(pos - origin);
-        isEdge = false;
         
         if (! hit) {
           return getSkyColor(dir);
         }
         
-       float shade = 1.0;
-              
-        //Directional Light
-        //vec3 lightDir = normalize(vec3(1.0, -3.0, -2.0));
-        shade = max(0.0, dot(lightDir, normal));
+        isEdge = edgeLength(pos) > 0.97;
 
-        vec3 p2, n2;
-        trace(pos + lightDir * 0.01, lightDir, p2, n2, hit, 64);
         
-        if (hit) {
-          shade = 0.0;
-        }
+        //Diffuse Lighting
+        vec3 aoColor = vec3(0.0);
+        float aoQuality = clamp(1.0 - (hitDist / 20.0), 0.0, 1.0);
+        traceAO(pos + normal * 0.001, normal, aoColor, aoQuality);
         
-       isEdge = edgeLength(pos) > 0.97;
+        color = vec4(aoColor, 1.0) * color;
+        color.a = 1.0;
         
-       //Ambient Occlusion
-       vec3 aoColor = vec3(0.0);
-       float aoQuality = clamp(1.0 - (hitDist / 20.0), 0.0, 1.0);
-       traceAO(pos + normal * 0.001, normal, aoColor, aoQuality); 
- 
-        //Specular
-        vec3 bounceDir = reflect(dir, normal);
-        vec4 bounceSample = trace(pos + bounceDir * 0.01, bounceDir, p2, n2, hit, 32);
-        float spec = pow(max(0.0, dot(bounceDir, lightDir)), 10.0);
+        //Specular Lighting
+        /*
+        vec3 bounceDir = reflect(dir, normal);        
+        vec4 bounceSample = trace(pos + bounceDir * 0.01, bounceDir, pos, normal, hit, 32);
+        color.rgb = mix(color.rgb, bounceSample.rgb, reflectionScale); 
+        */
         
-        if (shade < 0.01) {
-          spec = 0.0;
-        }
-        
-        //Apply Specular
-        color.rgb += bounceSample.rgb * bounceSample.a * 0.05 + spec * vec3(1.0, 1.0, 0.9);
-
-        //Apply Shading
-        color.rgb *= (aoColor * (shade * 0.2 + 0.8));
-        color = clamp(color, vec4(0.0), vec4(1.0));
-
         if (isEdge && showGrid) {
           color = clamp(color, vec4(0.0), vec4(1.0));
           color.rgb = vec3(1.0) - color.rgb;
           color.rgb = mix(color.rgb, vec3(1.0), 0.2);
+        }
+        
+        return color;
+       
+        
+    }
+    
+    
+    vec4 raycastCamera(vec2 texture_coords, out bool isEdge)
+    {
+        globalUV = texture_coords;
+    
+        vec3 origin, dir;
+        getHeadRay(texture_coords, origin, dir);
+        
+        vec3 pos, normal;
+        bool hit;
+        vec4 color = raycast(origin, dir, isEdge, pos, normal, hit);
+        
+        if (hit && reflectionScale > 0.0) {
+          vec3 bounceDir = reflect(dir, normal);
+          bool edge2;
+          vec4 reflectionColor = raycast(pos + bounceDir * 0.01, bounceDir, edge2, pos, normal, hit);
+          
+          float spec = pow(max(0.0, dot(bounceDir, lightDir)), 10.0);
+
+          color.rgb = mix(color.rgb, reflectionColor.rgb + vec3(spec), reflectionScale * 0.2);
         }
         
         return color;
@@ -472,18 +508,17 @@ function makeShaders()
     vec4 effect( vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords )
     {
         bool isEdge = false;
-        
         float aa = 0.5/viewportSize.x;
         
-        vec4 clr = raycast(texture_coords, isEdge);
+        vec4 clr = raycastCamera(texture_coords, isEdge);
         
         if (sampling == 2) {
-          clr += raycast(texture_coords + vec2(aa), isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa), isEdge);
           clr *= 0.5;
         } else if (sampling == 4) {
-          clr += raycast(texture_coords + vec2(aa, 0), isEdge);
-          clr += raycast(texture_coords + vec2(aa, aa), isEdge);
-          clr += raycast(texture_coords + vec2(0, aa), isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa, 0), isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa, aa), isEdge);
+          clr += raycastCamera(texture_coords + vec2(0, aa), isEdge);
           clr *= 0.25;
         }
         
@@ -533,6 +568,9 @@ function renderVoxels(grid)
   assets.renderShader:send("showGrid", state.options.showGrid);
   assets.renderShader:send("sampling", SAMPLING_QUALITY[state.options.quality]);
   assets.renderShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
+  assets.renderShader:send("reflectionScale", state.options.reflectionScale);
+  assets.renderShader:send("sunScale", state.options.sunScale);
+  
   
   tempLightDir = vec3(1.0, -3.0, -2.0):normalize();
   
@@ -938,6 +976,7 @@ local renderSectionToggle = true;
 local editSectionToggle = true;
 local postSectionToggle = true;
 
+
 function castle.uiupdate()
 
     local clear = false;
@@ -968,6 +1007,20 @@ function castle.uiupdate()
           state.dirtyVoxels = true;
         end
       });
+      
+      state.options.reflectionScale = ui.slider("Reflection", state.options.reflectionScale * 100, 0, 100, {
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      }) / 100.0;
+      
+      state.options.sunScale = ui.slider("Sun Instensity", state.options.sunScale * 100, 0, 100, {
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      }) / 100.0;
+      
+      
       
       --[[
       state.options.quality = ui.numberInput("Quality", state.options.quality, {
@@ -1015,7 +1068,9 @@ function client.load()
   
   state.options = {
     showGrid = false,
-    quality = 2,
+    reflectionScale = 0.5,
+    sunScale = 0.5,
+    quality = 3,
   }
   
   local offsetX = 200;
