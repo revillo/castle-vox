@@ -4,6 +4,11 @@ local cpml = require("lib/cpml")
 local mat4 = cpml.mat4;
 local vec3 = cpml.vec3;
 local vec2 = cpml.vec2;
+local ui = castle.ui;
+
+local state = {
+  
+}
 
 function headLook(out, eye, look_at, up)
 	local z_axis = (look_at - eye):normalize()
@@ -32,6 +37,14 @@ end
 
 local client = love;
 
+
+function renderAllLayers(grid)
+
+  for z = 1, grid.depth do
+    renderLayer(grid, z)
+  end
+  
+end
 
 function renderLayer(grid, z)
 
@@ -67,10 +80,13 @@ function renderLayer(grid, z)
   love.graphics.draw(layer.gpu, 0, (z-1) * 16);
   love.graphics.setCanvas();
   love.graphics.setBlendMode("alpha");
-
+  
+  state.dirtyVoxels = true;
+  
 end
 
-function randomizeGrid(grid) 
+
+function clearGrid(grid) 
   
   local w, h = grid.width, grid.height;
   
@@ -113,12 +129,16 @@ function randomizeGrid(grid)
       }
       
       local dist = vec3.dist(vec3(x, y, z), vec3(8, 12, 8.5));
+      local c = state.color;
       
       if y == 16 then
-        layer[x][y] = {0.5, 0.4, 0.0, 1.0}
-      elseif dist < 3 then
+        layer[x][y] = {c[1], c[2], c[3], c[4]};
+      end
+      --[[
+      if dist < 3 then
         layer[x][y] = {0.3, 0.8, 0.2, 1.0}
       end
+      ]]
       
     end
     end
@@ -128,9 +148,6 @@ function randomizeGrid(grid)
   end
 end
 
-local state = {
-  
-}
 
 function makeQuad()
   local vertices = {
@@ -171,6 +188,7 @@ function makeShaders()
   local trace = [[
     extern Image grid_1;
     uniform float gridDim;
+    uniform int pickMode;
     uniform mat4 headMatrix;
 
     vec4 sampleGrid(vec3 pos)
@@ -219,10 +237,8 @@ function makeShaders()
       } else {
         normal = vec3(0.0, 0.0, -sign(dir.z));
       }
-      
-       //return (pos + dir * (t));
+             
        return (pos + dir * (t + 0.001));
-
     }
     
     vec3 getNormal(vec3 pos, vec3 dir) {
@@ -311,7 +327,11 @@ function makeShaders()
       position = floor(position) + vec3(0.5);
       
       if (hit) {
-        return vec4((position + normal) / gridDim, 1.0);
+        if (pickMode == 1) {
+          return vec4((position + normal) / gridDim, 1.0);
+        } else {
+          return vec4(position / gridDim, 1.0);
+        }
       }
       
       return vec4(0.0);
@@ -321,7 +341,10 @@ function makeShaders()
   
   local renderFrag = trace..[[    
     uniform vec3 lightDir;
-
+    uniform bool showGrid;
+    uniform int sampling;
+    uniform vec2 viewportSize;
+    
     vec4 getSkyColor(vec3 direction) 
     {
       
@@ -341,7 +364,7 @@ function makeShaders()
       //Randomly rotate the alignment matrix to jitter samples
       //aligned_mat = AAm3(vec4(normal, randAngle(uv))) * aligned_mat;
 
-       float step = 0.8 / (quality * 32.0 + 16);
+      float step = 0.8 / (quality * 10.0 + 10.0);
         
         float weightSum = 0.0;
         
@@ -360,7 +383,7 @@ function makeShaders()
            vec3 op, on;
            bool hit;
            
-          vec4 sample = trace(origin, direction, op, on, hit, 5);
+          vec4 sample = trace(origin, direction, op, on, hit, 3);
           
           //float weight = dot(direction, normal) * (1.0 - float(hit));
           float weight = dot(direction, normal);
@@ -382,18 +405,23 @@ function makeShaders()
         outColor += color;
     }
     
-    vec4 effect( vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords )
+    float edgeLength(vec3 pos) {
+      vec3 d = abs(pos - (floor(pos) + vec3(0.5)));
+      return max(d.y + d.z, max(d.x + d.y, d.x + d.z));
+    }
+    
+    vec4 raycast(vec2 texture_coords, out bool isEdge)
     {
-        
-        vec3 origin, dir;
+      vec3 origin, dir;
         getHeadRay(texture_coords, origin, dir);
         
         vec3 normal;
         vec3 pos;
         bool hit;
-        color = trace(origin, dir, pos, normal, hit, 128);
+        vec4 color = trace(origin, dir, pos, normal, hit, 128);
         
         float hitDist = length(pos - origin);
+        isEdge = false;
         
         if (! hit) {
           return getSkyColor(dir);
@@ -401,7 +429,7 @@ function makeShaders()
         
        float shade = 1.0;
               
-       //Directional Light
+        //Directional Light
         //vec3 lightDir = normalize(vec3(1.0, -3.0, -2.0));
         shade = max(0.0, dot(lightDir, normal));
 
@@ -411,11 +439,13 @@ function makeShaders()
         if (hit) {
           shade = 0.0;
         }
-       
+        
+       isEdge = edgeLength(pos) > 0.97;
+        
        //Ambient Occlusion
        vec3 aoColor = vec3(0.0);
        float aoQuality = clamp(1.0 - (hitDist / 20.0), 0.0, 1.0);
-       traceAO(pos + normal * 0.01, normal, aoColor, aoQuality); 
+       traceAO(pos + normal * 0.001, normal, aoColor, aoQuality); 
  
         //Specular
         vec3 bounceDir = reflect(dir, normal);
@@ -431,8 +461,37 @@ function makeShaders()
 
         //Apply Shading
         color.rgb *= (aoColor * (shade * 0.2 + 0.8));
+        color = clamp(color, vec4(0.0), vec4(1.0));
+
+        if (isEdge && showGrid) {
+          color = clamp(color, vec4(0.0), vec4(1.0));
+          color.rgb = vec3(1.0) - color.rgb;
+          color.rgb = mix(color.rgb, vec3(1.0), 0.2);
+        }
         
         return color;
+    }
+    
+    vec4 effect( vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords )
+    {
+        bool isEdge = false;
+        
+        float aa = 0.5/viewportSize.x;
+        
+        vec4 clr = raycast(texture_coords, isEdge);
+        
+        if (sampling == 2) {
+          clr += raycast(texture_coords + vec2(aa), isEdge);
+          clr *= 0.5;
+        } else if (sampling == 4) {
+          clr += raycast(texture_coords + vec2(aa, 0), isEdge);
+          clr += raycast(texture_coords + vec2(aa, aa), isEdge);
+          clr += raycast(texture_coords + vec2(0, aa), isEdge);
+          clr *= 0.25;
+        }
+        
+        clr.a = 1.0;
+        return clr;
     }
   ]];
   
@@ -453,28 +512,61 @@ assets.renderShader, assets.queryShader = makeShaders();
 local tempHeadMat = mat4();
 local tempLightDir = vec3();
 
-function drawGrid3D(grid)
-  
+local SAMPLING_QUALITY = {1, 2, 4};
+
+function renderVoxels(grid)
+
+  if (not state.dirtyVoxels) then
+    return
+  end
+
+  state.dirtyVoxels = false;
+
+  love.graphics.setCanvas(assets.renderCanvas);
   love.graphics.setColor({1,1,1,1});
   love.graphics.setShader(assets.renderShader);
   
   mat4.transpose(tempHeadMat, state.headMatrix);
+  
+  local pixelScale = love.window.getDPIScale();
 
   assets.renderShader:send("headMatrix", tempHeadMat);
   assets.renderShader:send("gridDim", grid.width);
   assets.renderShader:send("grid_1", grid.gpu);
-
+  assets.renderShader:send("showGrid", state.options.showGrid);
+  assets.renderShader:send("sampling", SAMPLING_QUALITY[state.options.quality]);
+  assets.renderShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
+  
   tempLightDir = vec3(1.0, -3.0, -2.0):normalize();
   
   assets.renderShader:send("lightDir", {tempLightDir.x, tempLightDir.y, tempLightDir.z});
   
-  
   local vp = state.ui.viewport;
-  
-  love.graphics.draw(assets.quadMesh, vp.x, vp.y, 0, vp.w, vp.h);
+  love.graphics.draw(assets.quadMesh, 0, 0, 0, vp.w, vp.h);
+
   love.graphics.setShader();
+  love.graphics.setCanvas();
   
 end
+
+
+function drawGrid3D(grid)
+  
+  renderVoxels(grid);
+  
+  local vp = state.ui.viewport;
+  love.graphics.setColor(1,1,1,1);
+  
+  love.graphics.draw(assets.renderCanvas, vp.x, vp.y, 0, 1, 1);
+  
+  love.graphics.setColor(state.color);
+  love.graphics.setLineWidth(5);
+  love.graphics.rectangle("line", vp.x, vp.y, vp.w, vp.h);
+  
+  
+end
+
+
 local queryCanvas = love.graphics.newCanvas(1, 1, {dpiscale=1});
 
 function drawGrid2D(grid)
@@ -490,46 +582,122 @@ function drawGrid2D(grid)
     
   end
   
-  love.graphics.draw(queryCanvas, 0, 0, 0, 10, 10);
+  --love.graphics.draw(queryCanvas, 0, 0, 0, 10, 10);
   
  --love.graphics.draw(grid.gpu, 0, 0, 0, 1, 1);
-  
+ 
+end
 
+function drawImg(img, box)
+  
+   love.graphics.setColor(1,1,1,1);
+  love.graphics.setShader();
+    
+  love.graphics.draw(assets.img.rotate, box.x, box.y, 0, box.w / img:getWidth(), box.h / img:getHeight());
+  
+end
+
+function drawUI()
+  
+  love.graphics.setColor(1,1,1,1);
+  love.graphics.setShader();
+  
+  drawImg(assets.img.rotate, state.ui.cambutton);
+  
+  
+  --love.graphics.setColor(state.color); 
+  --love.graphics.rectangle("fill", 0, 0, 20, 20);
+  --love.graphics.setColor(1,1,1,1);
+end
+
+function handleResize(w, h)
+
+  local vp = state.ui.viewport;
+  assets.renderCanvas = love.graphics.newCanvas(vp.w, vp.h);
+  state.dirtyVoxels = true;
+  print("here", love.window.getDPIScale());
+  
 end
 
 function client.draw()
   
-  drawGrid2D(state.grid);
+  --drawGrid2D(state.grid);
   drawGrid3D(state.grid);
-
+  drawUI();
+  
 end
 
 function client.wheelmoved(x, y)
   
   state.cameraZoom = cpml.utils.clamp(state.cameraZoom - y, 5.0, 60.0);
   updateCamera3D(0,0);
+  state.dirtyVoxels = true;
+  
+end
 
+function contains(x, y, box)
+  return x >= box.x and y >= box.y and x < box.x + box.w and y < box.y + box.h; 
+end
+
+function controlCamera(toggle)
+  love.mouse.setRelativeMode(toggle);
+  state.ui.cameraMode = toggle;
 end
 
 function client.mousepressed(x, y, button)
   
+  if (contains(x, y, state.ui.cambutton)) then
+    controlCamera(true);
+    return;
+  end
+  
+  
   if (button == 1) then
-    paint3D(x, y);
+    edit3D(x, y);
+  elseif (button == 2) then
+    edit3D(x, y, "remove");
+  elseif (button == 3) then
+    controlCamera(true);
   end
  
 end
 
+function client.mousereleased(x, y, button)
+
+  if (button == 3 or button == 1) then
+    controlCamera(false);
+  end
+
+end
+
 function client.mousemoved(x,y, dx, dy)
   
-  if (love.mouse.isDown(2)) then
+  --if (love.mouse.isDown(3)) then
+  if (state.ui.cameraMode == true) then
+    --print(state.ui.cameraMode);
     updateCamera3D(dx, dy);
   end
+  --end
+  
+ 
   
 end
 
+
 function updateScript(script, dt)
 
-  --local prevGrid = state.grid.layers;
+  local size = state.grid.width;
+  
+  for x = 1, size do
+  for y = 1, size do
+  for z = 1, size do
+    
+    r, g, b, a = script(love.timer.getTime(), x, z, y);
+    state.grid.layers[z].cpu[x][y] = {r, g, b, a};
+    
+  end end end
+  
+  renderAllLayers(state.grid);
 
 end
 
@@ -573,14 +741,73 @@ function updatePaint2D()
     
 end
 
-function addVoxel(grid, x, y, z) 
+function removeVoxel(grid, x, y, z)
   
   if (not grid.layers[z]) or (not grid.layers[z].cpu[x]) or (not grid.layers[z].cpu[x][y]) then
     return ;
   end
   
   grid.layers[z].cpu[x][y] = {
-    1, 0, 0, 1
+    0, 0, 0, 0
+  }
+    
+  renderLayer(grid, z);
+  
+end
+
+local ColorUtil = {
+  
+  equals = function(a, b) 
+    return a[1] == b[1] and a[2] == b[2] and a[3] == b[3] and a[4] == b[4]
+  end,
+  
+  copy = function(a,b)
+    a[1] = b[1];
+    a[2] = b[2];
+    a[3] = b[3];
+    a[4] = b[4];
+  end
+
+}
+
+function fillVoxel(grid, x, y, z, target)
+  
+  if (not grid.layers[z]) or (not grid.layers[z].cpu[x]) or (not grid.layers[z].cpu[x][y]) then
+    return
+  end
+  
+  local vc = grid.layers[z].cpu[x][y];
+  
+  if (vc[4] == 0) then
+    return
+  end
+  
+  local color = state.color;
+  
+  if (ColorUtil.equals(vc, target)) then
+
+    ColorUtil.copy(vc, color);
+    
+    fillVoxel(grid, x + 1, y, z, target);
+    fillVoxel(grid, x - 1, y, z, target);
+    fillVoxel(grid, x , y + 1, z, target);
+    fillVoxel(grid, x , y - 1, z, target);
+    fillVoxel(grid, x , y, z + 1, target);
+    fillVoxel(grid, x , y, z - 1, target);
+    
+  end
+end
+
+function addVoxel(grid, x, y, z) 
+  
+  if (not grid.layers[z]) or (not grid.layers[z].cpu[x]) or (not grid.layers[z].cpu[x][y]) then
+    return ;
+  end
+
+  local c = state.color;
+  
+  grid.layers[z].cpu[x][y] = {
+    c[1], c[2], c[3], c[4]
   }
     
   renderLayer(grid, z);
@@ -588,7 +815,9 @@ function addVoxel(grid, x, y, z)
 end
 
 
-function paint3D(mx, my)
+function edit3D(mx, my, toolOveride)
+
+  local tool = toolOveride or state.tool;
 
   local vp = state.ui.viewport;
   
@@ -600,7 +829,8 @@ function paint3D(mx, my)
   
   love.graphics.setCanvas(queryCanvas);
   love.graphics.setColor(1,1,1,1);
-  
+  love.graphics.setBlendMode("replace", "premultiplied");  
+
   
   love.graphics.setShader(assets.queryShader);
   assets.queryShader:send("queryUV", texCoord);
@@ -611,27 +841,53 @@ function paint3D(mx, my)
   assets.queryShader:send("headMatrix", tempHeadMat);
   assets.queryShader:send("gridDim", grid.width);
   assets.queryShader:send("grid_1", grid.gpu);
+  
+  local pickMode = 0;
+  
+  if (tool == "add") then
+    pickMode = 1;
+  end
+  
+  assets.queryShader:send("pickMode", pickMode);
 
   love.graphics.draw(assets.quadMesh, 0, 0, 1, 1);
   love.graphics.rectangle("fill", 0, 0, 1, 1);
   
   love.graphics.setCanvas();
   love.graphics.setShader();
+  love.graphics.setBlendMode("alpha");  
 
   local r,g,b,a = queryCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
   
   if (a < 0.1) then return end;
-  
-  
-  local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
 
-  addVoxel(grid, x, y, z);
+  local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
+  
+  if (tool == "add") then
+    addVoxel(grid, x, y, z);
+  elseif (tool == "remove") then
+    removeVoxel(grid, x, y, z);
+  elseif (tool == "pick color") then
+    local pc = grid.layers[z].cpu[x][y];
+    state.color = {pc[1], pc[2], pc[3], pc[4]};
+  elseif (tool == "fill") then
+    local pc = grid.layers[z].cpu[x][y];
+    local vc = {};
+    ColorUtil.copy(vc, pc);
+    if(ColorUtil.equals(vc, state.color)) then return end;
+    fillVoxel(grid, x, y, z, vc);
+    renderAllLayers(grid);
+  end
   
 end
 
 local tempCameraPosition = vec3();
 function updateCamera3D(dx, dy)
-    
+  
+  if (dx ~= 0.0 or dy ~= 0.0) then
+    state.dirtyVoxels = true;
+  end
+  
   local cameraAngles = state.cameraAngles;
   
   local sensitivity = 0.01;
@@ -643,7 +899,6 @@ function updateCamera3D(dx, dy)
   tempCameraPosition.z = math.cos(cameraAngles.x) * math.cos(cameraAngles.y);
   tempCameraPosition.y = math.sin(cameraAngles.y);
   
-  print(tempCameraPosition:to_string());
   
   local target = vec3(8.0, 9.0, 8.0);
 
@@ -671,15 +926,86 @@ function spinCamera(dt)
 
 end
 
+local dpiSave = -1;
+
 function client.update(dt)
+  
+  if (dpiSave ~= love.window.getDPIScale()) then
+    dpiSave = love.window.getDPIScale();
+    w,h = love.graphics.getDimensions();
+    handleResize(w, h);
+  end
   
   --spinCamera();
   
-  updatePaint2D();
+  --updatePaint2D();
+  
+  --[[
+  updateScript(function(t, x, y, z) 
+    
+    local height = math.sin(x * 0.2 + t * 2.0) * 2 + math.cos(y * 0.2 + t * 2.0) * 2 + 10.0
+    
+    if ( z > height ) then
+      return 1.0, 1.0 - z/16.0, 0.0, 1.0;
+    else 
+      return 0.0, 0.0, 0.0, 0.0;
+    end
+    
+  end, dt)
+  ]]
   
 end
 
+local renderSectionToggle = true;
+local editSectionToggle = true;
+
+function castle.uiupdate()
+
+    local clear = false;
+    
+    renderSectionToggle = ui.section('Rendering', {open = renderSectionToggle}, function() 
+      
+      state.options.showGrid = ui.checkbox("Show Grid", state.options.showGrid, {
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      });
+      
+      state.options.quality = ui.numberInput("Quality", state.options.quality, {
+        min = 1, 
+        max = 3,
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      });
+     
+    end)
+    
+    editSectionToggle = ui.section('Editing', {open = editSectionToggle}, function()
+      state.color[1] = ui.slider('r', state.color[1] * 255, 0, 255) / 255;
+      state.color[2] = ui.slider('g', state.color[2] * 255, 0, 255) / 255;
+      state.color[3] = ui.slider('b', state.color[3] * 255, 0, 255) / 255;
+      
+      state.tool = ui.radioButtonGroup('Tool', state.tool, {'add', 'remove', 'pick color', 'fill'});
+      
+      clear = ui.button("Clear All");
+    end)
+    
+    if (clear) then
+      clearGrid(state.grid);
+    end
+    
+end
+
 function client.load()
+  
+  assets.img = {
+    
+    rotate = love.graphics.newImage("img/rotate-camera.png")
+  
+  }
+  
+
   
   state.grid = {
     layers = {},
@@ -690,24 +1016,42 @@ function client.load()
   
   state.cameraAngles = vec2(0.0, 0.0);
   state.cameraZoom = 30;
- 
+  state.color = {1,1,1,1}
+  state.tool = 'add';
+  
+  state.options = {
+    showGrid = false,
+    quality = 2,
+  }
+  
+  
   state.ui = {
   
     viewport = {
-      x = 412,
       y = 24,
+      x = 50,
       w = 380,
       h = 380
+    },
+    
+    cambutton = {
+      y = 24,
+      x = 60,
+      w = 32,
+      h = 32
     }
   
   }
+  
+  assets.renderCanvas = love.graphics.newCanvas(state.ui.viewport.w, state.ui.viewport.h);
+
   
   state.headMatrix = mat4();
   state.headMatrix:translate(state.headMatrix, vec3(8,8,-10));
   
   --print(state.headMatrix:to_string());
   
-  randomizeGrid(state.grid);
-  updateCamera3D(0,0);
+  clearGrid(state.grid);
+  updateCamera3D(50,50);
 
-end 
+end
