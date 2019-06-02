@@ -641,7 +641,18 @@ end
 
 function controlCamera(toggle)
   love.mouse.setRelativeMode(toggle);
+  
+  if (toggle ~= state.ui.cameraMode) then
+    state.dirtyVoxels = true;
+  end
+  
   state.ui.cameraMode = toggle;
+
+  state.options.quality = 3;
+  
+  if (toggle) then
+    state.options.quality = 1;
+  end
 end
 
 function client.mousepressed(x, y, button)
@@ -971,6 +982,7 @@ function castle.uiupdate()
         end
       });
       
+      --[[
       state.options.quality = ui.numberInput("Quality", state.options.quality, {
         min = 1, 
         max = 3,
@@ -978,6 +990,7 @@ function castle.uiupdate()
           state.dirtyVoxels = true;
         end
       });
+      ]]
      
     end)
     
@@ -1024,19 +1037,20 @@ function client.load()
     quality = 2,
   }
   
+  local offsetX = 200;
   
   state.ui = {
   
     viewport = {
+      x = offsetX,
       y = 24,
-      x = 50,
       w = 380,
       h = 380
     },
     
     cambutton = {
-      y = 24,
-      x = 60,
+      y = 24 + 5,
+      x = offsetX + 5,
       w = 32,
       h = 32
     }
@@ -1052,6 +1066,9 @@ function client.load()
   --print(state.headMatrix:to_string());
   
   clearGrid(state.grid);
+  
+  state.color = {1.0, 0.0, 0.85, 1.0};
+  
   updateCamera3D(50,50);
 
 end
