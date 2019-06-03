@@ -5,6 +5,7 @@ local mat4 = cpml.mat4;
 local vec3 = cpml.vec3;
 local vec2 = cpml.vec2;
 local ui = castle.ui;
+local List = require("lib/list");
 
 local state = {
   
@@ -853,6 +854,8 @@ function edit3D(mx, my, toolOveride)
 
   local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
   
+  saveSnapshot();
+  
   if (tool == "add") then
     addVoxel(grid, x, y, z);
   elseif (tool == "remove") then
@@ -868,6 +871,8 @@ function edit3D(mx, my, toolOveride)
     fillVoxel(grid, x, y, z, vc);
     renderAllLayers(grid);
   end
+  
+  
   
 end
 
@@ -888,7 +893,6 @@ function updateCamera3D(dx, dy)
   tempCameraPosition.x = math.sin(cameraAngles.x) * math.cos(cameraAngles.y);
   tempCameraPosition.z = math.cos(cameraAngles.x) * math.cos(cameraAngles.y);
   tempCameraPosition.y = math.sin(cameraAngles.y);
-  
   
   local target = vec3(8.0, 9.0, 8.0);
 
@@ -946,12 +950,62 @@ function client.update(dt)
   
 end
 
+function saveSnapshot()
+  
+  
+  local gs = {};
+  
+  local grid = state.grid;
+  
+  for z = 1, grid.depth do
+    gs[z] = {};
+  for x = 1, grid.width do
+    gs[z][x] = {}
+  for y = 1, grid.height do
+    
+    gs[z][x][y] = {};
+    ColorUtil.copy(gs[z][x][y], grid.voxels[z][x][y])
+  
+  end end end
+  
+  
+  List.pushright(state.snapshots, gs);
+  
+  if (List.length(state.snapshots) > 10) then
+    List.popleft(state.snapshots);
+  end
+  
+end
+
+function loadSnapshot()
+  
+  if (List.length(state.snapshots) == 0) then
+    return;
+  end
+  
+  local gs = List.popright(state.snapshots);
+  local grid = state.grid;
+  
+  for z = 1, grid.depth do
+  for x = 1, grid.width do
+  for y = 1, grid.height do
+    
+    ColorUtil.copy(grid.voxels[z][x][y], gs[z][x][y])
+  
+  end end end
+  
+  renderAllLayers(grid);
+  
+end
+
 function castle.postopened(post)
   
   --FromPost = true;
   
   state.grid.voxels = post.data.voxels;
   state.options = post.data.options;
+  state.cameraAngles = post.data.cameraAngles;
+  state.cameraZoom = post.data.cameraZoom;
   
   renderAllLayers(state.grid);
   
@@ -965,7 +1019,9 @@ function postGrid(grid)
           media = 'capture',
           data = {
               voxels = grid.voxels,
-              options = state.options
+              options = state.options,
+              cameraAngles = state.cameraAngles,
+              cameraZoom = state.cameraZoom
           }
       }
   end)
@@ -981,7 +1037,8 @@ function castle.uiupdate()
 
     local clear = false;
     local post = false;
-        
+    local undo = false;
+    
     --postSectionToggle = ui.section('Post', {open = postSectionToggle}, function()
       
       post = ui.button("Post to Castle!");
@@ -995,6 +1052,8 @@ function castle.uiupdate()
       state.color[3] = ui.slider('b', state.color[3] * 255, 0, 255) / 255;
       
       state.tool = ui.radioButtonGroup('Tool', state.tool, {'add', 'remove', 'pick color', 'fill'});
+      
+      undo = ui.button("Undo ("..List.length(state.snapshots)..")");
       
       clear = ui.button("Start Over");
     end)
@@ -1042,6 +1101,10 @@ function castle.uiupdate()
       clearGrid(state.grid);
     end
     
+    if (undo) then
+      loadSnapshot();
+    end
+    
 end
 
 function client.load()
@@ -1051,9 +1114,7 @@ function client.load()
     rotate = love.graphics.newImage("img/rotate-camera.png")
   
   }
-  
-
-  
+ 
   state.grid = {
     layers = {},
     depth = 16,
@@ -1066,12 +1127,15 @@ function client.load()
   state.color = {1,1,1,1}
   state.tool = 'add';
   
+  
   state.options = {
     showGrid = false,
     reflectionScale = 0.5,
     sunScale = 0.5,
     quality = 3,
   }
+  
+  state.snapshots = List.new(1);
   
   local offsetX = 200;
   
