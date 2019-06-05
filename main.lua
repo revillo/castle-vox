@@ -190,7 +190,7 @@ function clearGrid(grid)
       local dist = vec3.dist(vec3(x, y, z), vec3(8, 12, 8.5));
       local c = state.color;
       
-      if y == 16 then
+      if y == grid.height then
         layer[x][y] = {c[1], c[2], c[3], c[4]};
       end
       --[[
@@ -205,6 +205,10 @@ function clearGrid(grid)
     renderLayer(grid, z);
 
   end
+  
+  state.camTarget = vec3(state.grid.width * 0.5, state.grid.height * 0.5 + 1.0, state.grid.depth * 0.5);
+  
+  updateCamera3D(0,0);
 end
 
 
@@ -439,7 +443,7 @@ function makeShaders()
           
           
           //Hemisphere integral
-          for (float aa = 0.0; aa <= 1.0 - step; aa += step) {
+          for (float aa = 0.0; aa <= 1.0 - step; aa += step * 0.75) {
             for (float bb = 0.1 + jitter * 0.1; bb <= 1.0; bb += step) {
 
              vec3 ray = vec3(
@@ -499,7 +503,7 @@ function makeShaders()
  
         isEdge = false;
         
-        vec4 color = trace(origin, dir, pos, normal, hit, 128);
+        vec4 color = trace(origin, dir, pos, normal, hit, 160);
         
         float hitDist = length(pos - origin);
         
@@ -518,22 +522,13 @@ function makeShaders()
         color = vec4(aoColor, 1.0) * color;
         color.a = 1.0;
         
-        //Specular Lighting
-        /*
-        vec3 bounceDir = reflect(dir, normal);        
-        vec4 bounceSample = trace(pos + bounceDir * 0.01, bounceDir, pos, normal, hit, 32);
-        color.rgb = mix(color.rgb, bounceSample.rgb, reflectionScale); 
-        */
-        
         if (isEdge && showGrid) {
           color = clamp(color, vec4(0.0), vec4(1.0));
           color.rgb = vec3(1.0) - color.rgb;
           color.rgb = mix(color.rgb, vec3(0.0), 0.2);
         }
         
-        return color;
-       
-        
+        return color;    
     }
     
     
@@ -740,7 +735,10 @@ end
 
 function client.wheelmoved(x, y)
   
-  state.cameraZoom = cpml.utils.clamp(state.cameraZoom - y, 5.0, 60.0);
+  if (state.cameraMode == "orbit") then
+    state.cameraZoom = cpml.utils.clamp(state.cameraZoom - y, 5.0, 60.0);
+  end
+  
   updateCamera3D(0,0);
   state.dirtyVoxels = true;
   
@@ -982,6 +980,11 @@ function updateCamera3D(dx, dy)
   local cameraAngles = state.cameraAngles;
   
   local sensitivity = 0.01;
+  
+  if (state.cameraMode ~= 'orbit')  then
+    sensitivity = sensitivity * 0.5;
+  end
+  
   cameraAngles.x = cameraAngles.x - dx * sensitivity;
   cameraAngles.y = cameraAngles.y - dy * sensitivity;
   cameraAngles.y = cpml.utils.clamp(cameraAngles.y, -math.pi * 0.45, math.pi * 0.45);
@@ -990,13 +993,20 @@ function updateCamera3D(dx, dy)
   tempCameraPosition.z = math.cos(cameraAngles.x) * math.cos(cameraAngles.y);
   tempCameraPosition.y = math.sin(cameraAngles.y);
   
-  local target = vec3(8.0, 9.0, 8.0);
-
-  tempCameraPosition = tempCameraPosition:scale(state.cameraZoom) + target;
+  local target = state.camTarget;
   local up = vec3(0.0, 1.0, 0.0);
 
-  headLook(state.headMatrix, tempCameraPosition, target, up);
-  
+  if (state.cameraMode == 'orbit') then
+    tempCameraPosition = tempCameraPosition:scale(state.cameraZoom) + target;
+    headLook(state.headMatrix, tempCameraPosition, target, up);
+  else
+    tempCameraPosition.y = -tempCameraPosition.y;
+    local headPos = vec3(state.headMatrix[13], state.headMatrix[14], state.headMatrix[15]); 
+    local target = headPos + tempCameraPosition;
+    
+    headLook(state.headMatrix, headPos, target, up);
+    
+  end
 end
 
 function spinCamera(dt)
@@ -1018,6 +1028,81 @@ end
 
 local dpiSave = -1;
 
+
+function updateKeys(dt)
+
+  local tempMat = mat4.identity();
+  
+  for i = 1,16 do
+    tempMat[i] = state.headMatrix[i];
+  end
+  
+  local yScale = 0.0;
+  local speed = dt * state.cameraZoom * 0.5;
+
+  if (state.cameraMode == "first person") then
+    yScale = 1.0;
+    speed = dt * 10.0;
+  end
+  
+  tempMat[13] = 0.0;
+  tempMat[14] = 0.0;
+  tempMat[15] = 0.0;
+  
+  local moved = false;
+  local dir = vec3(0.0, 0.0, 0.0);
+  
+  if (love.keyboard.isDown("w")) then
+    dir = dir + tempMat * vec3(0.0, 0.0, 1.0);
+    dir.y = dir.y * yScale;
+    moved = true;
+  end
+  
+  if (love.keyboard.isDown("s")) then
+    dir = dir + tempMat * vec3(0.0, 0.0, -1.0);
+    dir.y = dir.y * yScale;
+    moved = true;
+  end
+  
+  if (love.keyboard.isDown("a")) then
+   dir = dir + tempMat * vec3(-1.0, 0.0, 0.0);
+    dir.y = dir.y * yScale;
+    moved = true;
+  end
+  
+  if (love.keyboard.isDown("d")) then
+    dir = dir + tempMat * vec3(1.0, 0.0, 0.0);
+    dir.y = dir.y * yScale;
+    moved = true;
+  end
+  
+  if (love.keyboard.isDown("e")) then
+    dir = vec3(0.0, -1.0, 0.0);
+    moved = true;
+  end
+  
+  if (love.keyboard.isDown("q")) then
+    dir = vec3(0.0, 1.0, 0.0);
+    moved = true;
+  end
+  
+  if (moved) then
+    dir = vec3.normalize(dir) * speed;
+    state.dirtyVoxels = true;
+    
+    if (state.cameraMode == 'orbit') then
+      state.camTarget = state.camTarget + dir;
+    else
+      state.headMatrix[13] = state.headMatrix[13] + dir.x;
+      state.headMatrix[14] = state.headMatrix[14] + dir.y;
+      state.headMatrix[15] = state.headMatrix[15] + dir.z;
+    end
+    
+    updateCamera3D(0,0);
+  end
+
+end
+
 function client.update(dt)
   
   if (dpiSave ~= love.window.getDPIScale()) then
@@ -1026,6 +1111,7 @@ function client.update(dt)
     handleResize(w, h);
   end
   
+  updateKeys(dt);
   --spinCamera();
   
   --updatePaint2D();
@@ -1102,7 +1188,15 @@ function castle.postopened(post)
   state.options = post.data.options;
   state.cameraAngles = vec2(post.data.cameraAngles[1], post.data.cameraAngles[2]);
   state.cameraZoom = post.data.cameraZoom;
-
+  
+  state.grid.width = post.data.width or 16;
+  state.grid.height = post.data.height or 16;
+  state.grid.depth = post.data.depth or 16;
+  
+  local ct = post.data.camTarget;
+  
+  state.camTarget = vec3(ct.x, ct.y, ct.z);
+  
   updateCamera3D(0,0);
   
   renderAllLayers(state.grid);
@@ -1117,9 +1211,13 @@ function postGrid(grid)
           media = 'capture',
           data = {
               voxels = grid.voxels,
+              width = grid.width,
+              height = grid.height,
+              depth = grid.depth,
               options = state.options,
               cameraAngles = {state.cameraAngles.x, state.cameraAngles.y},
-              cameraZoom = state.cameraZoom
+              cameraZoom = state.cameraZoom,
+              camTarget = {state.camTarget.x, state.camTarget.y, state.camTarget.z}
           }
       }
   end)
@@ -1129,7 +1227,10 @@ end
 local renderSectionToggle = true;
 local editSectionToggle = true;
 local postSectionToggle = true;
+local sceneSectionToggle = false;
+local cameraSectionToggle = false;
 
+local uiGridResolution = 16;
 
 function castle.uiupdate()
 
@@ -1144,6 +1245,14 @@ function castle.uiupdate()
     --end);
 
     
+    sceneSectionToggle = ui.section('Scene', {open = sceneSectionToggle}, function()
+      
+      uiGridResolution = ui.slider('Grid Resolution', uiGridResolution, 16, 64);
+      
+      clear = ui.button("Reset Scene");
+
+    end);
+    
     editSectionToggle = ui.section('Editing', {open = editSectionToggle}, function()
       state.color[1] = ui.slider('r', state.color[1] * 255, 0, 255) / 255;
       state.color[2] = ui.slider('g', state.color[2] * 255, 0, 255) / 255;
@@ -1153,7 +1262,6 @@ function castle.uiupdate()
       
       undo = ui.button("Undo ("..List.length(state.snapshots)..")");
       
-      clear = ui.button("Start Over");
     end)
     
         
@@ -1165,27 +1273,30 @@ function castle.uiupdate()
         end
       });
       
-       state.options.envLight = ui.checkbox("Environment Light", state.options.envLight, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
-      });
-      
-      state.options.quality = ui.numberInput("Quality", state.options.quality, {
+      state.options.quality = ui.numberInput("Render Quality (1-5)", state.options.quality, {
         min = 1, 
         max = 5,
         onChange = function(val)
           state.renderQuality = val;
+          state.forceQuality = true;
           state.dirtyVoxels = true;
         end
       });
       
-      state.options.canvasSize = ui.numberInput("Size", state.options.canvasSize, {
+      --[[
+      state.options.canvasSize = ui.numberInput("Canvas Size(1-3)", state.options.canvasSize, {
         min = 1, 
         max = 3,
         onChange = function(val)
            state.options.canvasSize = val;
            adjustViewport(val);
+        end
+      });
+      ]]
+      
+       state.options.envLight = ui.checkbox("Environment Light", state.options.envLight, {
+        onChange = function()
+          state.dirtyVoxels = true;
         end
       });
       
@@ -1202,12 +1313,48 @@ function castle.uiupdate()
       }) / 100.0;
       
     end)
+    
+    cameraSectionToggle = ui.section('Camera', {open = cameraSectionToggle}, function()
+      
+      state.cameraMode = ui.radioButtonGroup('Camera Mode', state.cameraMode, {'orbit', 'first person'}, {
+        
+        onChange = function(val) 
+          
+          state.cameraMode = val;
+          
+          if (val == 'first person') then
+            
+            state.headMatrix[13] = state.grid.width * 0.5;
+            state.headMatrix[14] = state.grid.height * 0.5;
+            state.headMatrix[15] = -state.grid.depth;
+
+          else --orbit
+                
+            state.camTarget = vec3(state.grid.width * 0.5, state.grid.height * 0.5, state.grid.height * 0.5);
+            
+          end
+                      
+          state.cameraAngles.x = 0.0;
+          state.cameraAngles.y = 0.0;
+          
+          updateCamera3D(0,0);
+          state.dirtyVoxels = true;
+        
+        end
+      
+      });      
+    end)
 
     if (post) then
       postGrid(state.grid);
     end
     
     if (clear) then
+    
+      state.grid.width = uiGridResolution;
+      state.grid.height = uiGridResolution;
+      state.grid.depth = uiGridResolution;
+    
       clearGrid(state.grid);
     end
     
@@ -1259,6 +1406,7 @@ function client.load()
     canvasSize = 2
   }
   
+  state.cameraMode = 'orbit';
   state.renderQuality = 3;
   
   state.snapshots = List.new(1);
