@@ -1185,9 +1185,17 @@ function castle.postopened(post)
   --FromPost = true;
   
   state.grid.voxels = post.data.voxels;
-  state.options = post.data.options;
+  --state.options = post.data.options;
+  
+  for k,v in pairs(post.data.options) do
+    state.options[k] = v;
+  end
+  
   state.cameraAngles = vec2(post.data.cameraAngles[1], post.data.cameraAngles[2]);
   state.cameraZoom = post.data.cameraZoom;
+  
+  
+    print("Loaded Camera Settings", state.cameraZoom, state.cameraAngles:to_string());
   
   state.grid.width = post.data.width or 16;
   state.grid.height = post.data.height or 16;
@@ -1195,7 +1203,10 @@ function castle.postopened(post)
   
   local ct = post.data.camTarget;
   
-  state.camTarget = vec3(ct.x, ct.y, ct.z);
+  if (ct) then
+    state.camTarget = vec3(ct[1], ct[2], ct[3]);
+    print("Loaded Camera Target", state.camTarget:to_string());
+  end
   
   updateCamera3D(0,0);
   
@@ -1204,6 +1215,7 @@ function castle.postopened(post)
 end
 
 function postGrid(grid)
+
 
   network.async(function()
       castle.post.create {
@@ -1330,7 +1342,9 @@ function castle.uiupdate()
 
           else --orbit
                 
+            --[[
             state.camTarget = vec3(state.grid.width * 0.5, state.grid.height * 0.5, state.grid.height * 0.5);
+            ]]
             
           end
                       
