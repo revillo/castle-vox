@@ -1,2 +1,5 @@
 main: main.lua
-title: vox
+title: Lux Voxel
+description: Lightweight voxel editor and raytracer
+owner: revillo
+coverImage: cover.png

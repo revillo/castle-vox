@@ -42,15 +42,7 @@ local cpml = {
 }
 
 local files = {
-	"bvh",
-	"color",
-	"constants",
-	"intersect",
 	"mat4",
-	"mesh",
-	"octree",
-	"quat",
-	"simplex",
 	"utils",
 	"vec2",
 	"vec3",

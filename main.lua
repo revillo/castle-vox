@@ -1,11 +1,58 @@
 --castle://localhost:4000/vox.castle
 
+if CASTLE_PREFETCH then
+    CASTLE_PREFETCH({
+        'lib/list.lua',
+        'lib/cpml/modules/vec3.lua',
+        'lib/cpml/modules/vec2.lua',
+        'lib/cpml/modules/utils.lua',
+        'lib/cpml/modules/mat4.lua',
+        'lib/cpml/modules/quat.lua',
+        'lib/cpml/modules/constants.lua',
+        'lib/cpml/init.lua',
+        'img/rotate-camera.png'
+    })
+end
+
+print("Prefetch complete")
+
+local VIEWPORT_SIZES = {
+  
+  --1
+  {
+    x = 200,
+    y = 50,
+    w = 280,
+    h = 280
+  },
+  
+  --2
+  {
+    x = 200,
+    y = 24,
+    w = 380,
+    h = 380
+  },
+  
+  
+  --3
+  {
+    x = 200,
+    y = 5,
+    w = 410,
+    h = 410,
+  }
+
+}
+
 local cpml = require("lib/cpml")
 local mat4 = cpml.mat4;
 local vec3 = cpml.vec3;
 local vec2 = cpml.vec2;
 local ui = castle.ui;
 local List = require("lib/list");
+
+print("Requires Done");
 
 local state = {
   
@@ -45,6 +92,21 @@ function renderAllLayers(grid)
     renderLayer(grid, z)
   end
   
+end
+
+function adjustViewport()
+  
+  local offsetX = 200;
+  
+  state.ui.viewport = VIEWPORT_SIZES[state.options.canvasSize];
+  state.ui.cambutton = {
+    y = state.ui.viewport.y + 5,
+    x = state.ui.viewport.x + 5,
+    w = 32,
+    h = 32
+  }
+  handleResize();
+
 end
 
 function renderLayer(grid, z)
@@ -262,10 +324,9 @@ function makeShaders()
     
     vec4 trace(vec3 origin, vec3 dir, out vec3 pos, out vec3 normal, out bool hit, int tMax) {
       
-      pos = origin;
+      pos = origin + dir * 0.001;
       
       for (int i = 0; i < tMax; i++) {
-        pos = advance(pos, dir, normal);
         vec4 sample = sampleGrid(pos);  
         
         if (sample.a > 0.1) {
@@ -280,7 +341,8 @@ function makeShaders()
           hit = true;
           return sample;
         }
-          
+        pos = advance(pos, dir, normal);
+
       }
       
       /* Ground Plane
@@ -339,6 +401,7 @@ function makeShaders()
   local renderFrag = trace..[[    
     uniform vec3 lightDir;
     uniform bool showGrid;
+    uniform bool envLight;
     uniform int sampling;
     uniform vec2 viewportSize;
     uniform float reflectionScale;
@@ -350,19 +413,7 @@ function makeShaders()
       float t = dot(-direction, lightDir) * 0.3 + 0.7;
       return vec4(mix(vec3(0.4, 0.7, 1.0), vec3(0.95, 0.9, 0.8),1.0-t), 1.0);
     }
-     
-    mat3 AAm3(vec4 axisAngle) {
-      vec3 axis = normalize(axisAngle.xyz);
-      float s = sin(axisAngle.w);
-      float c = cos(axisAngle.w);
-      float oc = 1.0 - c;
-      
-      return mat3(oc * axis.x * axis.x + c, oc * axis.x * axis.y - axis.z * s, oc * axis.z * axis.x + axis.y * s,
-        oc * axis.x * axis.y + axis.z * s, oc * axis.y * axis.y + c, oc * axis.y * axis.z - axis.x * s, 
-        oc * axis.z * axis.x - axis.y * s, oc * axis.y * axis.z + axis.x * s, oc * axis.z * axis.z + c 
-      );
-    }  
-    
+
     #define PI 3.14159
 
     float randAngle (vec2 st) {
@@ -374,60 +425,64 @@ function makeShaders()
 
     void traceAO(in vec3 origin, in vec3 normal, inout vec3 outColor, float quality) {
       
-      vec3 randvec = normalize(vec3(normal.y, -normal.z, normal.x));
-      vec3 tangent = normalize(randvec - dot(randvec, normal) * normal);
-      mat3 aligned_mat = mat3(tangent, normalize(cross(normal, tangent)), normal);  
-      
+      float weightSum = 0.0;
       vec3 color = vec3(0.0);
-      
-      aligned_mat = AAm3(vec4(normal, randAngle(globalUV))) * aligned_mat;
-      
-      float step = 0.8 / (quality * (sampling * 4.0) + 8.0);
-        
-        float weightSum = 0.0;
-        
-        //Hemisphere integral
-        for (float aa = 0.0; aa <= 1.0 - step; aa += step) {
-          for (float bb = step; bb <= 0.9; bb += step) {
 
-           vec3 ray = vec3(
-              cos(aa * PI * 2) * cos(bb * PI), 
-              sin(aa * PI * 2) * cos(bb * PI),
-              sin(bb * PI)
-            );
+      if (envLight) {
+        vec3 randvec = normalize(vec3(normal.y, -normal.z, normal.x));
+        vec3 tangent = normalize(randvec - dot(randvec, normal) * normal);
+        mat3 aligned_mat = mat3(tangent, normalize(cross(normal, tangent)), normal);  
+        
+      
+        float jitter = randAngle(globalUV);   
+        float step = 1.0 / (quality * (sampling * 4.0) + 4.0);
+          
+          
+          //Hemisphere integral
+          for (float aa = 0.0; aa <= 1.0 - step; aa += step) {
+            for (float bb = 0.1 + jitter * 0.1; bb <= 1.0; bb += step) {
+
+             vec3 ray = vec3(
+                cos(aa * PI * 2 + jitter) * cos(bb * PI), 
+                sin(aa * PI * 2 + jitter) * cos(bb * PI),
+                sin(bb * PI)
+              );
+              
+             vec3 direction = aligned_mat * ray;
+             
+             vec3 op, on;
+             bool hit;
+             
+            vec4 sample = trace(origin, direction, op, on, hit, 1 + sampling);
             
-           vec3 direction = aligned_mat * ray;
-           
-           vec3 op, on;
-           bool hit;
-           
-          vec4 sample = trace(origin, direction, op, on, hit, 1 + sampling);
-          
-          float weight = 1.0;//dot(direction, normal);
-          
-          vec3 envLight = getSkyColor(direction).rgb;//vec3(-direction.y * 0.1 + 0.9);
-          envLight = mix(envLight, vec3(1.0, 1.0, 1.0), 0.5);
-          
-          //Ambient Light
-          color += envLight * weight  * (1.0 - float(hit));
-          //Bounce Light
-          color += sample.rgb * weight * float(hit) * 0.25;
+            float weight = mix(1.0, dot(direction, normal), 0.5);
+            
+            vec3 envLight = getSkyColor(direction).rgb;//vec3(-direction.y * 0.1 + 0.9);
+            envLight = mix(envLight, vec3(1.0, 1.0, 1.0), 0.5);
+            
+            //Ambient Light
+            color += envLight * weight  * (1.0 - float(hit));
+            //Bounce Light
+            color += sample.rgb * weight * float(hit) * 0.25;
 
-          weightSum += weight;
+            weightSum += weight;
 
-          }      
+            }      
+          }
+          color /= weightSum;
+          weightSum = 1.0;
+
+        } else {
+          weightSum = 0.1;
         }
         
+        //Sun Light
         vec3 p2, n2;
         bool hit;
         trace(origin + lightDir * 0.01, lightDir, p2, n2, hit, 64);
         
-        //color = vec3(0.0);
-        //weightSum = 0.0;
-        color /= weightSum;
-        weightSum = 1.0;
-        
-       float sunWeight = sunScale;
+        float sunWeight = sunScale * 2.0;
+
        weightSum += sunWeight;
        color += sunWeight * vec3(0.95, 0.9, 0.8) * (1.0 - float(hit)) * max(0.0, dot(lightDir, normal));
         
@@ -473,7 +528,7 @@ function makeShaders()
         if (isEdge && showGrid) {
           color = clamp(color, vec4(0.0), vec4(1.0));
           color.rgb = vec3(1.0) - color.rgb;
-          color.rgb = mix(color.rgb, vec3(1.0), 0.2);
+          color.rgb = mix(color.rgb, vec3(0.0), 0.2);
         }
         
         return color;
@@ -511,16 +566,33 @@ function makeShaders()
         bool isEdge = false;
         float aa = 0.5/viewportSize.x;
         
-        vec4 clr = raycastCamera(texture_coords, isEdge);
+        vec4 clr = vec4(0.0);
         
-        if (sampling == 2) {
-          clr += raycastCamera(texture_coords + vec2(aa), isEdge);
+        if (sampling < 2) {
+          clr = raycastCamera(texture_coords, isEdge);
+        } if (sampling == 2) {
+          clr = raycastCamera(texture_coords + vec2(-aa * 0.5), isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa * 0.5), isEdge);
           clr *= 0.5;
         } else if (sampling == 4) {
+          clr = raycastCamera(texture_coords, isEdge);
           clr += raycastCamera(texture_coords + vec2(aa, 0), isEdge);
           clr += raycastCamera(texture_coords + vec2(aa, aa), isEdge);
           clr += raycastCamera(texture_coords + vec2(0, aa), isEdge);
           clr *= 0.25;
+        } else if (sampling > 4) {
+          clr = raycastCamera(texture_coords, isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa, 0), isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa, aa), isEdge);
+          clr += raycastCamera(texture_coords + vec2(0, aa), isEdge);
+          
+          clr += raycastCamera(texture_coords + vec2(-aa, aa), isEdge);
+          clr += raycastCamera(texture_coords + vec2(-aa, 0), isEdge);
+          clr += raycastCamera(texture_coords + vec2(-aa, -aa), isEdge);
+          
+          clr += raycastCamera(texture_coords + vec2(0, -aa), isEdge);
+          clr += raycastCamera(texture_coords + vec2(aa, -aa), isEdge);
+          clr /= 9.0;
         }
         
         clr.a = 1.0;
@@ -539,19 +611,37 @@ local assets = {
 
 }
 
-assets.renderShader, assets.queryShader = makeShaders();
-
 
 local tempHeadMat = mat4();
 local tempLightDir = vec3();
 
-local SAMPLING_QUALITY = {1, 2, 4};
+local SAMPLING_QUALITY = {1, 2, 4, 6, 8};
+
+
+local lastRenderTime = -1;
+local lastRenderQuality = 1;
 
 function renderVoxels(grid)
-
+  local tStart = love.timer.getTime();
+ 
+  local renderQuality = 1;
+  
   if (not state.dirtyVoxels) then
-    return
+    
+    if (lastRenderQuality < state.options.quality and tStart - lastRenderTime > 0.1) then     
+      renderQuality = state.renderQuality;
+    else
+        return
+    end
   end
+  
+  if (state.forceQuality) then
+    state.forceQuality = false;
+    renderQuality = state.options.quality;
+  end
+  
+  lastRenderTime = tStart;
+  lastRenderQuality = renderQuality;
 
   state.dirtyVoxels = false;
 
@@ -567,7 +657,8 @@ function renderVoxels(grid)
   assets.renderShader:send("gridDim", grid.width);
   assets.renderShader:send("grid_1", grid.gpu);
   assets.renderShader:send("showGrid", state.options.showGrid);
-  assets.renderShader:send("sampling", SAMPLING_QUALITY[state.options.quality]);
+  assets.renderShader:send("envLight", state.options.envLight);
+  assets.renderShader:send("sampling", SAMPLING_QUALITY[renderQuality]);
   assets.renderShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
   assets.renderShader:send("reflectionScale", state.options.reflectionScale);
   assets.renderShader:send("sunScale", state.options.sunScale);
@@ -582,6 +673,13 @@ function renderVoxels(grid)
 
   love.graphics.setShader();
   love.graphics.setCanvas();
+  
+  --Force Flush:
+  --local r,g,b,a = assets.renderCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
+  
+  --local tStop = love.timer.getTime();
+  
+ -- print("time:", (tStop - tStart) * 1000.0);
   
 end
 
@@ -601,10 +699,6 @@ function drawGrid3D(grid)
   
   
 end
-
-
-local queryCanvas = love.graphics.newCanvas(1, 1, {dpiscale=1});
-
 
 function drawImg(img, box)
   
@@ -633,7 +727,6 @@ function handleResize(w, h)
   local vp = state.ui.viewport;
   assets.renderCanvas = love.graphics.newCanvas(vp.w, vp.h);
   state.dirtyVoxels = true;
-  print("here", love.window.getDPIScale());
   
 end
 
@@ -666,10 +759,10 @@ function controlCamera(toggle)
   
   state.ui.cameraMode = toggle;
 
-  state.options.quality = 3;
+  state.renderQuality = state.options.quality;
   
   if (toggle) then
-    state.options.quality = 1;
+    state.renderQuality = 1;
   end
 end
 
@@ -818,7 +911,7 @@ function edit3D(mx, my, toolOveride)
     return;
   end
   
-  love.graphics.setCanvas(queryCanvas);
+  love.graphics.setCanvas(assets.queryCanvas);
   love.graphics.setColor(1,1,1,1);
   love.graphics.setBlendMode("replace", "premultiplied");  
 
@@ -848,7 +941,7 @@ function edit3D(mx, my, toolOveride)
   love.graphics.setShader();
   love.graphics.setBlendMode("alpha");  
 
-  local r,g,b,a = queryCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
+  local r,g,b,a = assets.queryCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
   
   if (a < 0.1) then return end;
 
@@ -858,8 +951,10 @@ function edit3D(mx, my, toolOveride)
   
   if (tool == "add") then
     addVoxel(grid, x, y, z);
+    state.forceQuality = true;
   elseif (tool == "remove") then
     removeVoxel(grid, x, y, z);
+    state.forceQuality = true;
   elseif (tool == "pick color") then
     local pc = grid.voxels[z][x][y];
     state.color = {pc[1], pc[2], pc[3], pc[4]};
@@ -870,6 +965,7 @@ function edit3D(mx, my, toolOveride)
     if(ColorUtil.equals(vc, state.color)) then return end;
     fillVoxel(grid, x, y, z, vc);
     renderAllLayers(grid);
+    state.forceQuality = true;
   end
   
   
@@ -1004,8 +1100,10 @@ function castle.postopened(post)
   
   state.grid.voxels = post.data.voxels;
   state.options = post.data.options;
-  state.cameraAngles = post.data.cameraAngles;
+  state.cameraAngles = vec2(post.data.cameraAngles[1], post.data.cameraAngles[2]);
   state.cameraZoom = post.data.cameraZoom;
+
+  updateCamera3D(0,0);
   
   renderAllLayers(state.grid);
   
@@ -1020,7 +1118,7 @@ function postGrid(grid)
           data = {
               voxels = grid.voxels,
               options = state.options,
-              cameraAngles = state.cameraAngles,
+              cameraAngles = {state.cameraAngles.x, state.cameraAngles.y},
               cameraZoom = state.cameraZoom
           }
       }
@@ -1067,6 +1165,30 @@ function castle.uiupdate()
         end
       });
       
+       state.options.envLight = ui.checkbox("Environment Light", state.options.envLight, {
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      });
+      
+      state.options.quality = ui.numberInput("Quality", state.options.quality, {
+        min = 1, 
+        max = 5,
+        onChange = function(val)
+          state.renderQuality = val;
+          state.dirtyVoxels = true;
+        end
+      });
+      
+      state.options.canvasSize = ui.numberInput("Size", state.options.canvasSize, {
+        min = 1, 
+        max = 3,
+        onChange = function(val)
+           state.options.canvasSize = val;
+           adjustViewport(val);
+        end
+      });
+      
       state.options.reflectionScale = ui.slider("Reflection", state.options.reflectionScale * 100, 0, 100, {
         onChange = function()
           state.dirtyVoxels = true;
@@ -1079,18 +1201,6 @@ function castle.uiupdate()
         end
       }) / 100.0;
       
-      
-      
-      --[[
-      state.options.quality = ui.numberInput("Quality", state.options.quality, {
-        min = 1, 
-        max = 3,
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
-      });
-      ]]
-     
     end)
 
     if (post) then
@@ -1107,13 +1217,25 @@ function castle.uiupdate()
     
 end
 
+function client.visible(visible)
+  state.dirtyVoxels = visible;
+end
+
+print("Ready To Load");
+
 function client.load()
   
+  print("Load Start");
+
   assets.img = {
-    
     rotate = love.graphics.newImage("img/rotate-camera.png")
-  
   }
+  
+  print("Loaded imgs")
+ 
+ assets.renderShader, assets.queryShader = makeShaders();
+
+ print("Created Shaders");
  
   state.grid = {
     layers = {},
@@ -1130,10 +1252,14 @@ function client.load()
   
   state.options = {
     showGrid = false,
-    reflectionScale = 0.5,
+    envLight = true,
+    reflectionScale = 0.0,
     sunScale = 0.5,
-    quality = 3,
+    quality = 2,
+    canvasSize = 2
   }
+  
+  state.renderQuality = 3;
   
   state.snapshots = List.new(1);
   
@@ -1157,8 +1283,11 @@ function client.load()
   
   }
   
+  assets.queryCanvas = love.graphics.newCanvas(1, 1, {dpiscale=1});
+
   assets.renderCanvas = love.graphics.newCanvas(state.ui.viewport.w, state.ui.viewport.h);
 
+  print("Created Canvases");
   
   state.headMatrix = mat4();
   state.headMatrix:translate(state.headMatrix, vec3(8,8,-10));
@@ -1170,5 +1299,5 @@ function client.load()
   state.color = {1.0, 0.0, 0.85, 1.0};
   
   updateCamera3D(50,50);
-
+  
 end
