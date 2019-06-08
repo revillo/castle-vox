@@ -404,8 +404,10 @@ function makeShaders()
   
   local renderFrag = trace..[[    
     uniform vec3 lightDir;
+    uniform vec3 sunColor;
+    uniform vec3 skyColor;
     uniform bool showGrid;
-    uniform bool envLight;
+    uniform float envScale;
     uniform int sampling;
     uniform vec2 viewportSize;
     uniform float reflectionScale;
@@ -414,8 +416,10 @@ function makeShaders()
     vec4 getSkyColor(vec3 direction) 
     {
       
-      float t = dot(-direction, lightDir) * 0.3 + 0.7;
-      return vec4(mix(vec3(0.4, 0.7, 1.0), vec3(0.95, 0.9, 0.8),1.0-t), 1.0);
+      float t = pow(dot(direction, lightDir) * 0.5 + 0.5, 2.0);
+      t *= sunScale;
+      
+      return vec4(mix(skyColor, sunColor, t), 1.0);
     }
 
     #define PI 3.14159
@@ -432,7 +436,7 @@ function makeShaders()
       float weightSum = 0.0;
       vec3 color = vec3(0.0);
 
-      if (envLight) {
+      if (envScale > 0.0) {
         vec3 randvec = normalize(vec3(normal.y, -normal.z, normal.x));
         vec3 tangent = normalize(randvec - dot(randvec, normal) * normal);
         mat3 aligned_mat = mat3(tangent, normalize(cross(normal, tangent)), normal);  
@@ -462,12 +466,12 @@ function makeShaders()
             float weight = mix(1.0, dot(direction, normal), 0.5);
             
             vec3 envLight = getSkyColor(direction).rgb;//vec3(-direction.y * 0.1 + 0.9);
-            envLight = mix(envLight, vec3(1.0, 1.0, 1.0), 0.5);
+            envLight = mix(envLight, vec3(1.0, 1.0, 1.0), 0.5) * envScale * 2.0;
             
             //Ambient Light
             color += envLight * weight  * (1.0 - float(hit));
             //Bounce Light
-            color += sample.rgb * weight * float(hit) * 0.25;
+            color += sample.rgb * weight * float(hit) * 0.25 * envScale * 2.0;
 
             weightSum += weight;
 
@@ -477,7 +481,7 @@ function makeShaders()
           weightSum = 1.0;
 
         } else {
-          weightSum = 0.1;
+          weightSum = 1.0;
         }
         
         //Sun Light
@@ -485,12 +489,12 @@ function makeShaders()
         bool hit;
         trace(origin + lightDir * 0.01, lightDir, p2, n2, hit, 64);
         
-        float sunWeight = sunScale * 2.0;
+        //float sunWeight = sunScale * 2.0;
 
-       weightSum += sunWeight;
-       color += sunWeight * vec3(0.95, 0.9, 0.8) * (1.0 - float(hit)) * max(0.0, dot(lightDir, normal));
+       //weightSum += sunWeight;
+       color += sunScale * 2.0 * vec3(0.95, 0.9, 0.8) * (1.0 - float(hit)) * max(0.0, dot(lightDir, normal));
         
-        color /= weightSum; 
+        //color /= weightSum; 
         outColor += color;
     }
     
@@ -652,15 +656,22 @@ function renderVoxels(grid)
   assets.renderShader:send("gridDim", grid.width);
   assets.renderShader:send("grid_1", grid.gpu);
   assets.renderShader:send("showGrid", state.options.showGrid);
-  assets.renderShader:send("envLight", state.options.envLight);
+  assets.renderShader:send("envScale", state.options.envScale);
   assets.renderShader:send("sampling", SAMPLING_QUALITY[renderQuality]);
   assets.renderShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
   assets.renderShader:send("reflectionScale", state.options.reflectionScale);
+  assets.renderShader:send("envScale", state.options.envScale);
   assets.renderShader:send("sunScale", state.options.sunScale);
+  assets.renderShader:send("sunColor", state.options.sunColor);
+  assets.renderShader:send("skyColor", state.options.skyColor);
   
+  local sa1 = state.options.sunAngle * math.pi * 2;
+  local sa2 = state.options.sunIncline * math.pi * 0.5;
   
-  tempLightDir = vec3(1.0, -3.0, -2.0):normalize();
-  
+  tempLightDir.x = math.sin(sa1) * math.cos(sa2);
+  tempLightDir.z = math.cos(sa1) * math.cos(sa2);
+  tempLightDir.y = -math.sin(sa2);
+    
   assets.renderShader:send("lightDir", {tempLightDir.x, tempLightDir.y, tempLightDir.z});
   
   local vp = state.ui.viewport;
@@ -1306,13 +1317,13 @@ function castle.uiupdate()
       });
       ]]
       
-       state.options.envLight = ui.checkbox("Environment Light", state.options.envLight, {
+      state.options.reflectionScale = ui.slider("Reflection", state.options.reflectionScale * 100, 0, 100, {
         onChange = function()
           state.dirtyVoxels = true;
         end
-      });
+      }) / 100.0;
       
-      state.options.reflectionScale = ui.slider("Reflection", state.options.reflectionScale * 100, 0, 100, {
+       state.options.envScale = ui.slider("Environment Intensity", state.options.envScale * 100, 0, 100, {
         onChange = function()
           state.dirtyVoxels = true;
         end
@@ -1323,6 +1334,18 @@ function castle.uiupdate()
           state.dirtyVoxels = true;
         end
       }) / 100.0;
+      
+      state.options.sunAngle = ui.slider("Sun Angle", state.options.sunAngle * 360, 0, 360, {
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      }) / 360;
+      
+      state.options.sunIncline = ui.slider("Sun Incline", state.options.sunIncline * 90, 0, 90, {
+        onChange = function()
+          state.dirtyVoxels = true;
+        end
+      }) / 90;
       
     end)
     
@@ -1413,11 +1436,16 @@ function client.load()
   
   state.options = {
     showGrid = false,
-    envLight = true,
+    --envLight = true,
     reflectionScale = 0.0,
-    sunScale = 0.5,
+    sunScale = 0.3,
+    envScale = 0.3,
     quality = 2,
-    canvasSize = 2
+    canvasSize = 2,
+    sunAngle = 0.08,
+    sunIncline = 0.55,
+    skyColor = {0.4, 0.7, 1.0, 1.0},
+    sunColor = {0.95, 0.9, 0.8}
   }
   
   state.cameraMode = 'orbit';
