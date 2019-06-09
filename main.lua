@@ -16,6 +16,7 @@ end
 
 print("Prefetch complete")
 
+--[[
 local VIEWPORT_SIZES = {
   
   --1
@@ -44,6 +45,7 @@ local VIEWPORT_SIZES = {
   }
 
 }
+]]
 
 local cpml = require("lib/cpml")
 local mat4 = cpml.mat4;
@@ -94,6 +96,7 @@ function renderAllLayers(grid)
   
 end
 
+--[[
 function adjustViewport()
   
   local offsetX = 200;
@@ -108,6 +111,7 @@ function adjustViewport()
   handleResize();
 
 end
+]]
 
 function renderLayer(grid, z)
 
@@ -253,6 +257,7 @@ function makeShaders()
     uniform float gridDim;
     uniform int pickMode;
     uniform mat4 headMatrix;
+    uniform vec2 viewportSize;
 
     vec4 sampleGrid(vec3 pos)
     {
@@ -365,6 +370,7 @@ function makeShaders()
       dir = vec3(uv * 2.0 - vec2(1.0), 1.0);
       //dir.x *= -0.5;
       //dir.y *= 0.5;
+      dir.x *= viewportSize.x / viewportSize.y;
       dir.xy *= 0.5;
       dir = normalize(dir);
       dir = normalize((headMatrix * vec4(dir, 0.0)).xyz);        
@@ -409,7 +415,6 @@ function makeShaders()
     uniform bool showGrid;
     uniform float envScale;
     uniform int sampling;
-    uniform vec2 viewportSize;
     uniform float reflectionScale;
     uniform float sunScale;
     
@@ -895,7 +900,6 @@ function addVoxel(grid, x, y, z)
   if (not grid.voxels[z]) or (not grid.voxels[z][x]) or (not grid.voxels[z][x][y]) then
     return;
   end
-  
 
   local c = state.color;
   
@@ -906,7 +910,6 @@ function addVoxel(grid, x, y, z)
   renderLayer(grid, z);
 
 end
-
 
 function edit3D(mx, my, toolOveride)
 
@@ -935,6 +938,9 @@ function edit3D(mx, my, toolOveride)
   assets.queryShader:send("gridDim", grid.width);
   assets.queryShader:send("grid_1", grid.gpu);
   
+  local pixelScale = love.window.getDPIScale();
+  assets.queryShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
+  
   local pickMode = 0;
   
   if (tool == "add") then
@@ -958,7 +964,7 @@ function edit3D(mx, my, toolOveride)
   
   saveSnapshot();
   
-  if (tool == "add") then
+  if (tool == "add" or tool == "replace") then
     addVoxel(grid, x, y, z);
     state.forceQuality = true;
   elseif (tool == "remove") then
@@ -1255,11 +1261,40 @@ local cameraSectionToggle = false;
 
 local uiGridResolution = 16;
 
+function switchCamera()
+    state.cameraAngles.x = math.pi + state.cameraAngles.x;
+ 
+    updateCamera3D(0,0);
+    state.dirtyVoxels = true;
+end
+
+function resetCamera()
+    if (state.cameraMode == 'first person') then
+          
+      state.headMatrix[13] = state.grid.width * 0.5;
+      state.headMatrix[14] = state.grid.height * 0.5;
+      state.headMatrix[15] = -state.grid.depth;
+
+    else --orbit
+          
+      state.camTarget = vec3(state.grid.width * 0.5, state.grid.height * 0.5, state.grid.height * 0.5);
+      state.cameraZoom = 30 
+     
+    end
+                    
+    state.cameraAngles.x = 0.0;
+    state.cameraAngles.y = 0.0;
+    
+    updateCamera3D(0,0);
+    state.dirtyVoxels = true;
+end
+
 function castle.uiupdate()
 
     local clear = false;
     local post = false;
     local undo = false;
+    local resetCameraButton = false;
     
     --postSectionToggle = ui.section('Post', {open = postSectionToggle}, function()
       
@@ -1281,7 +1316,7 @@ function castle.uiupdate()
       state.color[2] = ui.slider('g', state.color[2] * 255, 0, 255) / 255;
       state.color[3] = ui.slider('b', state.color[3] * 255, 0, 255) / 255;
       
-      state.tool = ui.radioButtonGroup('Tool', state.tool, {'add', 'remove', 'pick color', 'fill'});
+      state.tool = ui.radioButtonGroup('Tool', state.tool, {'add', 'remove', 'pick color', 'fill', 'replace'});
       
       undo = ui.button("Undo ("..List.length(state.snapshots)..")");
       
@@ -1335,7 +1370,7 @@ function castle.uiupdate()
         end
       }) / 100.0;
       
-      state.options.sunAngle = ui.slider("Sun Angle", state.options.sunAngle * 360, 0, 360, {
+      state.options.sunAngle = ui.slider("Sun Direction", state.options.sunAngle * 360, 0, 360, {
         onChange = function()
           state.dirtyVoxels = true;
         end
@@ -1356,34 +1391,22 @@ function castle.uiupdate()
         onChange = function(val) 
           
           state.cameraMode = val;
-          
-          if (val == 'first person') then
-            
-            state.headMatrix[13] = state.grid.width * 0.5;
-            state.headMatrix[14] = state.grid.height * 0.5;
-            state.headMatrix[15] = -state.grid.depth;
-
-          else --orbit
-                
-            --[[
-            state.camTarget = vec3(state.grid.width * 0.5, state.grid.height * 0.5, state.grid.height * 0.5);
-            ]]
-            
-          end
-                      
-          state.cameraAngles.x = 0.0;
-          state.cameraAngles.y = 0.0;
-          
-          updateCamera3D(0,0);
-          state.dirtyVoxels = true;
+          switchCamera();
         
         end
       
-      });      
+      });  
+
+      resetCameraButton = ui.button("Reset Camera");
+      
     end)
 
     if (post) then
       postGrid(state.grid);
+    end
+    
+    if (resetCameraButton) then
+      resetCamera();
     end
     
     if (clear) then
@@ -1453,14 +1476,14 @@ function client.load()
   
   state.snapshots = List.new(1);
   
-  local offsetX = 200;
+  local offsetX = 140;
   
   state.ui = {
   
     viewport = {
       x = offsetX,
       y = 24,
-      w = 380,
+      w = 500,
       h = 380
     },
     
