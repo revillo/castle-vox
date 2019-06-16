@@ -421,7 +421,7 @@ function makeShaders()
     vec4 getSkyColor(vec3 direction) 
     {
       
-      float t = pow(dot(direction, lightDir) * 0.5 + 0.5, 2.0);
+      float t = pow(dot(direction, lightDir) * 0.5 + 0.5, 4.0);
       t *= sunScale;
       
       return vec4(mix(skyColor, sunColor, t), 1.0);
@@ -493,13 +493,9 @@ function makeShaders()
         vec3 p2, n2;
         bool hit;
         trace(origin + lightDir * 0.01, lightDir, p2, n2, hit, 64);
-        
-        //float sunWeight = sunScale * 2.0;
 
-       //weightSum += sunWeight;
-       color += sunScale * 2.0 * vec3(0.95, 0.9, 0.8) * (1.0 - float(hit)) * max(0.0, dot(lightDir, normal));
+        color += sunColor * (sunScale * 2.0 * (1.0 - float(hit)) * max(0.0, dot(lightDir, normal)));
         
-        //color /= weightSum; 
         outColor += color;
     }
     
@@ -559,7 +555,7 @@ function makeShaders()
           
           float spec = pow(max(0.0, dot(bounceDir, lightDir)), 10.0);
 
-          color.rgb = mix(color.rgb, reflectionColor.rgb + vec3(spec), reflectionScale * 0.2);
+          color.rgb = mix(color.rgb, reflectionColor.rgb + vec3(spec), reflectionScale * 0.4);
         }
         
         return color;
@@ -780,13 +776,97 @@ function controlCamera(toggle)
   end
 end
 
+
+function edit3D(mx, my, toolOveride)
+
+  local tool = toolOveride or state.tool;
+
+  local vp = state.ui.viewport;
+  
+  local texCoord = {(mx - vp.x)/vp.w, (my - vp.y) / vp.h};
+  
+  if (texCoord[1] < 0 or texCoord[1] > 1) then
+    return;
+  end
+  
+  love.graphics.setCanvas(assets.queryCanvas);
+  love.graphics.setColor(1,1,1,1);
+  love.graphics.setBlendMode("replace", "premultiplied");  
+
+  
+  love.graphics.setShader(assets.queryShader);
+  assets.queryShader:send("queryUV", texCoord);
+  mat4.transpose(tempHeadMat, state.headMatrix);
+
+  local grid = state.grid;
+  
+  assets.queryShader:send("headMatrix", tempHeadMat);
+  assets.queryShader:send("gridDim", grid.width);
+  assets.queryShader:send("grid_1", grid.gpu);
+  
+  local pixelScale = love.window.getDPIScale();
+  assets.queryShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
+  
+  local pickMode = 0;
+  
+  if (tool == "add") then
+    pickMode = 1;
+  end
+  
+  assets.queryShader:send("pickMode", pickMode);
+
+  love.graphics.draw(assets.quadMesh, 0, 0, 1, 1);
+  love.graphics.rectangle("fill", 0, 0, 1, 1);
+  
+  love.graphics.setCanvas();
+  love.graphics.setShader();
+  love.graphics.setBlendMode("alpha");  
+
+  local r,g,b,a = assets.queryCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
+  
+  if (a < 0.1) then return end;
+
+  local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
+  
+  saveSnapshot();
+  
+  if (tool == "add" or tool == "replace") then
+    addVoxel(grid, x, y, z);
+    state.forceQuality = true;
+  elseif (tool == "remove") then
+    removeVoxel(grid, x, y, z);
+    state.forceQuality = true;
+  elseif (tool == "pick color") then
+    local pc = grid.voxels[z][x][y];
+    state.color = {pc[1], pc[2], pc[3], pc[4]};
+  elseif (tool == "fill") then
+    local pc = grid.voxels[z][x][y];
+    local vc = {};
+    ColorUtil.copy(vc, pc);
+    if(ColorUtil.equals(vc, state.color)) then return end;
+    fillVoxel(grid, x, y, z, vc);
+    renderAllLayers(grid);
+    state.forceQuality = true;
+  end
+  
+end
+
+--[[
+function startEdit3D(x, y)
+
+end
+
+function stopEdit3D(x,y)
+
+end
+]]
+
 function client.mousepressed(x, y, button)
   
   if (contains(x, y, state.ui.cambutton)) then
     controlCamera(true);
     return;
   end
-  
   
   if (button == 1) then
     edit3D(x, y);
@@ -812,6 +892,7 @@ function client.mousemoved(x,y, dx, dy)
   if (state.ui.cameraMode == true) then
     --print(state.ui.cameraMode);
     updateCamera3D(dx, dy);
+    return;
   end
   --end
   
@@ -909,82 +990,6 @@ function addVoxel(grid, x, y, z)
     
   renderLayer(grid, z);
 
-end
-
-function edit3D(mx, my, toolOveride)
-
-  local tool = toolOveride or state.tool;
-
-  local vp = state.ui.viewport;
-  
-  local texCoord = {(mx - vp.x)/vp.w, (my - vp.y) / vp.h};
-  
-  if (texCoord[1] < 0 or texCoord[1] > 1) then
-    return;
-  end
-  
-  love.graphics.setCanvas(assets.queryCanvas);
-  love.graphics.setColor(1,1,1,1);
-  love.graphics.setBlendMode("replace", "premultiplied");  
-
-  
-  love.graphics.setShader(assets.queryShader);
-  assets.queryShader:send("queryUV", texCoord);
-  mat4.transpose(tempHeadMat, state.headMatrix);
-
-  local grid = state.grid;
-  
-  assets.queryShader:send("headMatrix", tempHeadMat);
-  assets.queryShader:send("gridDim", grid.width);
-  assets.queryShader:send("grid_1", grid.gpu);
-  
-  local pixelScale = love.window.getDPIScale();
-  assets.queryShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
-  
-  local pickMode = 0;
-  
-  if (tool == "add") then
-    pickMode = 1;
-  end
-  
-  assets.queryShader:send("pickMode", pickMode);
-
-  love.graphics.draw(assets.quadMesh, 0, 0, 1, 1);
-  love.graphics.rectangle("fill", 0, 0, 1, 1);
-  
-  love.graphics.setCanvas();
-  love.graphics.setShader();
-  love.graphics.setBlendMode("alpha");  
-
-  local r,g,b,a = assets.queryCanvas:newImageData(1, 1, 0, 0, 1, 1):getPixel(0,0);
-  
-  if (a < 0.1) then return end;
-
-  local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
-  
-  saveSnapshot();
-  
-  if (tool == "add" or tool == "replace") then
-    addVoxel(grid, x, y, z);
-    state.forceQuality = true;
-  elseif (tool == "remove") then
-    removeVoxel(grid, x, y, z);
-    state.forceQuality = true;
-  elseif (tool == "pick color") then
-    local pc = grid.voxels[z][x][y];
-    state.color = {pc[1], pc[2], pc[3], pc[4]};
-  elseif (tool == "fill") then
-    local pc = grid.voxels[z][x][y];
-    local vc = {};
-    ColorUtil.copy(vc, pc);
-    if(ColorUtil.equals(vc, state.color)) then return end;
-    fillVoxel(grid, x, y, z, vc);
-    renderAllLayers(grid);
-    state.forceQuality = true;
-  end
-  
-  
-  
 end
 
 local tempCameraPosition = vec3();
@@ -1296,6 +1301,9 @@ function castle.uiupdate()
     local undo = false;
     local resetCameraButton = false;
     
+    local makeDirty = function()
+      state.dirtyVoxels = true;
+    end
     --postSectionToggle = ui.section('Post', {open = postSectionToggle}, function()
       
       post = ui.button("Post to Castle!");
@@ -1312,9 +1320,17 @@ function castle.uiupdate()
     end);
     
     editSectionToggle = ui.section('Editing', {open = editSectionToggle}, function()
-      state.color[1] = ui.slider('r', state.color[1] * 255, 0, 255) / 255;
-      state.color[2] = ui.slider('g', state.color[2] * 255, 0, 255) / 255;
-      state.color[3] = ui.slider('b', state.color[3] * 255, 0, 255) / 255;
+      
+      if (ui.colorPicker) then
+        state.color = {ui.colorPicker("Color", state.color[1], state.color[2], state.color[3], 1, {
+          enableAlpha = false
+        })};
+      else
+        state.color[1] = ui.slider('r', state.color[1] * 255, 0, 255) / 255;
+        state.color[2] = ui.slider('g', state.color[2] * 255, 0, 255) / 255;
+        state.color[3] = ui.slider('b', state.color[3] * 255, 0, 255) / 255;
+      end
+      
       
       state.tool = ui.radioButtonGroup('Tool', state.tool, {'add', 'remove', 'pick color', 'fill', 'replace'});
       
@@ -1326,9 +1342,7 @@ function castle.uiupdate()
     renderSectionToggle = ui.section('Rendering', {open = renderSectionToggle}, function() 
       
       state.options.showGrid = ui.checkbox("Show Grid", state.options.showGrid, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
+        onChange = makeDirty
       });
       
       state.options.quality = ui.numberInput("Render Quality (1-5)", state.options.quality, {
@@ -1353,33 +1367,37 @@ function castle.uiupdate()
       ]]
       
       state.options.reflectionScale = ui.slider("Reflection", state.options.reflectionScale * 100, 0, 100, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
+        onChange = makeDirty
       }) / 100.0;
       
        state.options.envScale = ui.slider("Environment Intensity", state.options.envScale * 100, 0, 100, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
+        onChange = makeDirty
       }) / 100.0;
       
+      if (ui.colorPicker) then
+        local skyc = state.options.skyColor;
+        state.options.skyColor = {ui.colorPicker("Sky Color", skyc[1], skyc[2], skyc[3], 1, {
+          enableAlpha = false,
+          onChange = makeDirty
+        })};
+        
+        local sunc = state.options.sunColor;
+        state.options.sunColor = {ui.colorPicker("Sun Color", sunc[1], sunc[2], sunc[3], 1, {
+          enableAlpha = false,
+          onChange = makeDirty
+        })};
+      end
+      
       state.options.sunScale = ui.slider("Sun Instensity", state.options.sunScale * 100, 0, 100, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
+        onChange = makeDirty
       }) / 100.0;
       
       state.options.sunAngle = ui.slider("Sun Direction", state.options.sunAngle * 360, 0, 360, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
+        onChange = makeDirty
       }) / 360;
       
       state.options.sunIncline = ui.slider("Sun Incline", state.options.sunIncline * 90, 0, 90, {
-        onChange = function()
-          state.dirtyVoxels = true;
-        end
+        onChange = makeDirty
       }) / 90;
       
     end)
