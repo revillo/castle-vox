@@ -56,6 +56,21 @@ local List = require("lib/list");
 
 print("Requires Done");
 
+local ColorUtil = {
+  
+  equals = function(a, b) 
+    return a[1] == b[1] and a[2] == b[2] and a[3] == b[3] and a[4] == b[4]
+  end,
+  
+  copy = function(a,b)
+    a[1] = b[1];
+    a[2] = b[2];
+    a[3] = b[3];
+    a[4] = b[4];
+  end
+
+}
+
 local state = {
   
 }
@@ -158,7 +173,9 @@ function clearGrid(grid)
   
   local w, h = grid.width, grid.height;
   
-  grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
+  --grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
+  --state.gridBackup.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
+  
   grid.gpu:setWrap("clampzero", "clampzero");
   grid.gpu:setFilter("nearest", "nearest");
   
@@ -785,7 +802,7 @@ function edit3D(mx, my, toolOveride)
   
   local texCoord = {(mx - vp.x)/vp.w, (my - vp.y) / vp.h};
   
-  if (texCoord[1] < 0 or texCoord[1] > 1) then
+  if (texCoord[1] < 0 or texCoord[1] > 1 or texCoord[2] < 0 or texCoord[2] > 1) then
     return;
   end
   
@@ -802,7 +819,7 @@ function edit3D(mx, my, toolOveride)
   
   assets.queryShader:send("headMatrix", tempHeadMat);
   assets.queryShader:send("gridDim", grid.width);
-  assets.queryShader:send("grid_1", grid.gpu);
+  assets.queryShader:send("grid_1", state.gridBackup.gpu);
   
   local pixelScale = love.window.getDPIScale();
   assets.queryShader:send("viewportSize", {state.ui.viewport.w * pixelScale, state.ui.viewport.h * pixelScale});
@@ -828,7 +845,16 @@ function edit3D(mx, my, toolOveride)
 
   local x, y, z = math.floor(r * grid.width) + 1, math.floor(g * grid.height) + 1, math.floor(b * grid.depth) + 1;
   
-  saveSnapshot();
+  if (x == state.lastEditCoord[1] and y == state.lastEditCoord[2] and z == state.lastEditCoord[3]) then
+    return;
+  else
+    state.lastEditCoord = {x, y, z};
+  end
+    
+  if (not state.didSnapshot and tool ~= "pick color") then
+    saveSnapshot();
+    state.didSnapshot = true;
+  end
   
   if (tool == "add" or tool == "replace") then
     addVoxel(grid, x, y, z);
@@ -851,17 +877,32 @@ function edit3D(mx, my, toolOveride)
   
 end
 
---[[
-function startEdit3D(x, y)
+
+function startEdit3D(x, y, toolOveride)
+  
+  state.didSnapshot = false;
+  state.lastEditCoord = {-1, -1, -1};
+  
+  state.gridBackup.voxels = createSnapshot();
+  renderAllLayers(state.gridBackup);
+  
+  state.ui.editMode = toolOveride or state.tool;
+  edit3D(x, y, state.ui.editMode);
 
 end
 
 function stopEdit3D(x,y)
 
+  state.ui.editMode = false;
+  
 end
-]]
+
 
 function client.mousepressed(x, y, button)
+  
+  if (not contains(x,y, state.ui.viewport)) then
+    return;
+  end
   
   if (contains(x, y, state.ui.cambutton)) then
     controlCamera(true);
@@ -869,9 +910,11 @@ function client.mousepressed(x, y, button)
   end
   
   if (button == 1) then
-    edit3D(x, y);
+    --edit3D(x, y);
+    startEdit3D(x, y);
   elseif (button == 2) then
-    edit3D(x, y, "remove");
+    --edit3D(x, y, "remove");
+    startEdit3D(x, y, "remove");
   elseif (button == 3) then
     controlCamera(true);
   end
@@ -880,6 +923,9 @@ end
 
 function client.mousereleased(x, y, button)
 
+  if (button == 1 or button == 2) then
+    stopEdit3D();
+  end
   if (button == 3 or button == 1) then
     controlCamera(false);
   end
@@ -893,6 +939,10 @@ function client.mousemoved(x,y, dx, dy)
     --print(state.ui.cameraMode);
     updateCamera3D(dx, dy);
     return;
+  end
+  
+  if (state.ui.editMode) then
+    edit3D(x, y, state.ui.editMode);
   end
   --end
   
@@ -932,20 +982,7 @@ function removeVoxel(grid, x, y, z)
   
 end
 
-local ColorUtil = {
-  
-  equals = function(a, b) 
-    return a[1] == b[1] and a[2] == b[2] and a[3] == b[3] and a[4] == b[4]
-  end,
-  
-  copy = function(a,b)
-    a[1] = b[1];
-    a[2] = b[2];
-    a[3] = b[3];
-    a[4] = b[4];
-  end
 
-}
 
 function fillVoxel(grid, x, y, z, target)
   
@@ -1154,9 +1191,8 @@ function client.update(dt)
   
 end
 
-function saveSnapshot()
-  
-  
+function createSnapshot()
+ 
   local gs = {};
   
   local grid = state.grid;
@@ -1172,6 +1208,13 @@ function saveSnapshot()
   
   end end end
   
+  return gs;
+  
+end
+
+function saveSnapshot()
+  
+  local gs = createSnapshot();
   
   List.pushright(state.snapshots, gs);
   
@@ -1202,6 +1245,16 @@ function loadSnapshot()
   
 end
 
+function resizeGrid()
+  
+  local grid = state.grid;
+  state.gridBackup.width, state.gridBackup.height, state.gridBackup.depth = grid.width, grid.height, grid.depth;
+  
+  state.grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
+  state.gridBackup.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
+
+end
+
 function castle.postopened(post)
   
   --FromPost = true;
@@ -1216,12 +1269,13 @@ function castle.postopened(post)
   state.cameraAngles = vec2(post.data.cameraAngles[1], post.data.cameraAngles[2]);
   state.cameraZoom = post.data.cameraZoom;
   
-  
-    print("Loaded Camera Settings", state.cameraZoom, state.cameraAngles:to_string());
+  print("Loaded Camera Settings", state.cameraZoom, state.cameraAngles:to_string());
   
   state.grid.width = post.data.width or 16;
   state.grid.height = post.data.height or 16;
   state.grid.depth = post.data.depth or 16;
+  
+  resizeGrid();
   
   local ct = post.data.camTarget;
   
@@ -1432,6 +1486,8 @@ function castle.uiupdate()
       state.grid.width = uiGridResolution;
       state.grid.height = uiGridResolution;
       state.grid.depth = uiGridResolution;
+      
+      resizeGrid();
     
       clearGrid(state.grid);
     end
@@ -1520,10 +1576,16 @@ function client.load()
 
   print("Created Canvases");
   
+  state.gridBackup = {
+  
+  };
+  
   state.headMatrix = mat4();
   state.headMatrix:translate(state.headMatrix, vec3(8,8,-10));
   
   --print(state.headMatrix:to_string());
+  
+  resizeGrid();
   
   clearGrid(state.grid);
   
