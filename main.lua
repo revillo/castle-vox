@@ -1,4 +1,5 @@
 --castle://localhost:4000/vox.castle
+local PostVersion = 1;
 
 if CASTLE_PREFETCH then
     CASTLE_PREFETCH({
@@ -153,7 +154,7 @@ function renderLayer(grid, z)
   
   for x = 1,w do
   for y = 1,h do
-    love.graphics.setColor(layer[x][y]);
+    love.graphics.setColor(layer[x][y] or {0,0,0,0});
     love.graphics.rectangle("fill", x-1, (z-1) * grid.height + y-1, 1, 1);
    end end
   
@@ -164,7 +165,9 @@ function renderLayer(grid, z)
   love.graphics.setCanvas();
   love.graphics.setBlendMode("alpha");
   
-  state.dirtyVoxels = true;
+  if (grid == state.grid) then
+    state.dirtyVoxels = true;
+  end
   
 end
 
@@ -204,9 +207,11 @@ function clearGrid(grid)
       end
       ]]
       
+      --[[
       layer[x][y] = {
         0,0,0,0
       }
+      ]]
       
       local dist = vec3.dist(vec3(x, y, z), vec3(8, 12, 8.5));
       local c = state.color;
@@ -867,6 +872,7 @@ function edit3D(mx, my, toolOveride)
     state.color = {pc[1], pc[2], pc[3], pc[4]};
   elseif (tool == "fill") then
     local pc = grid.voxels[z][x][y];
+    if (not pc) then return end;
     local vc = {};
     ColorUtil.copy(vc, pc);
     if(ColorUtil.equals(vc, state.color)) then return end;
@@ -883,8 +889,10 @@ function startEdit3D(x, y, toolOveride)
   state.didSnapshot = false;
   state.lastEditCoord = {-1, -1, -1};
   
-  state.gridBackup.voxels = createSnapshot();
-  renderAllLayers(state.gridBackup);
+  if (not state.gridBackup.voxels) then
+    state.gridBackup.voxels = createSnapshot();
+    renderAllLayers(state.gridBackup);
+  end
   
   state.ui.editMode = toolOveride or state.tool;
   edit3D(x, y, state.ui.editMode);
@@ -894,6 +902,11 @@ end
 function stopEdit3D(x,y)
 
   state.ui.editMode = false;
+  
+  if (state.didSnapshot) then
+    state.gridBackup.voxels = createSnapshot();
+    renderAllLayers(state.gridBackup);
+  end
   
 end
 
@@ -970,14 +983,11 @@ end
 
 function removeVoxel(grid, x, y, z)
   
-  if (not grid.voxels[z]) or (not grid.voxels[z][x]) or (not grid.voxels[z][x][y]) then
+  if (x < 1 or x > grid.width or y < 1 or y > grid.height or z < 1 or z > grid.depth) then
     return;
   end
   
-  grid.voxels[z][x][y] = {
-    0, 0, 0, 0
-  }
-    
+  grid.voxels[z][x][y] = nil;  
   renderLayer(grid, z);
   
 end
@@ -986,14 +996,14 @@ end
 
 function fillVoxel(grid, x, y, z, target)
   
-  if (not grid.voxels[z]) or (not grid.voxels[z][x]) or (not grid.voxels[z][x][y]) then
+  if (x < 1 or x > grid.width or y < 1 or y > grid.height or z < 1 or z > grid.depth) then
     return;
   end
   
   
   local vc = grid.voxels[z][x][y];
   
-  if (vc[4] == 0) then
+  if (not vc or vc[4] == 0) then
     return
   end
   
@@ -1015,7 +1025,7 @@ end
 
 function addVoxel(grid, x, y, z) 
   
-  if (not grid.voxels[z]) or (not grid.voxels[z][x]) or (not grid.voxels[z][x][y]) then
+  if (x < 1 or x > grid.width or y < 1 or y > grid.height or z < 1 or z > grid.depth) then
     return;
   end
 
@@ -1203,8 +1213,10 @@ function createSnapshot()
     gs[z][x] = {}
   for y = 1, grid.height do
     
-    gs[z][x][y] = {};
-    ColorUtil.copy(gs[z][x][y], grid.voxels[z][x][y])
+    if (grid.voxels[z][x][y]) then
+      gs[z][x][y] = {};
+      ColorUtil.copy(gs[z][x][y], grid.voxels[z][x][y])
+    end
   
   end end end
   
@@ -1237,12 +1249,17 @@ function loadSnapshot()
   for x = 1, grid.width do
   for y = 1, grid.height do
     
-    ColorUtil.copy(grid.voxels[z][x][y], gs[z][x][y])
-  
+    if (gs[z][x][y]) then
+      grid.voxels[z][x][y] = {};
+      ColorUtil.copy(grid.voxels[z][x][y], gs[z][x][y])
+    else
+      grid.voxels[z][x][y] = nil;
+    end
   end end end
   
   renderAllLayers(grid);
-  
+  state.gridBackup.voxels = nil;
+
 end
 
 function resizeGrid()
@@ -1252,7 +1269,8 @@ function resizeGrid()
   
   state.grid.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
   state.gridBackup.gpu = love.graphics.newCanvas(grid.width, grid.height * grid.depth, {dpiscale=1});
-
+  state.gridBackup.voxels = nil;
+  
 end
 
 function castle.postopened(post)
@@ -1275,6 +1293,12 @@ function castle.postopened(post)
   state.grid.height = post.data.height or 16;
   state.grid.depth = post.data.depth or 16;
   
+  if (post.data.version == 1) then
+    
+    unpostifyGridVoxels(state.grid);
+  
+  end
+  
   resizeGrid();
   
   local ct = post.data.camTarget;
@@ -1290,25 +1314,72 @@ function castle.postopened(post)
   
 end
 
+function unpostifyGridVoxels(grid)
+  
+  local voxels = grid.voxels;
+  
+  for z = 1, grid.depth do
+  for x = 1, grid.width do
+  for y = 1, grid.height do
+    
+    local ystr = tostring(y);
+    
+    if (voxels[z][x][ystr]) then
+      voxels[z][x][y] = voxels[z][x][ystr]; 
+      voxels[z][x][ystr] = nil;
+    end
+    
+  end end end
+
+end
+
+function postifyGridVoxels(grid) 
+  
+  local voxels = grid.voxels;
+  local outvoxels = {};
+  
+  for z = 1, grid.depth do
+    outvoxels[z] = {};
+  for x = 1, grid.width do
+    outvoxels[z][x] = {};
+  for y = 1, grid.height do
+    
+    if (voxels[z][x][y]) then
+      outvoxels[z][x][tostring(y)] = voxels[z][x][y]; 
+    end
+    
+  end end end
+
+  return outvoxels;
+end
+
+
 function postGrid(grid)
 
-
-  network.async(function()
+    data = {
+        version = PostVersion,
+        voxels = postifyGridVoxels(grid),
+        width = grid.width,
+        height = grid.height,
+        depth = grid.depth,
+        options = state.options,
+        cameraAngles = {state.cameraAngles.x, state.cameraAngles.y},
+        cameraZoom = state.cameraZoom,
+        camTarget = {state.camTarget.x, state.camTarget.y, state.camTarget.z}  
+    }
+    
+    network.async(function()
       castle.post.create {
           message = 'Voxelize This',
           media = 'capture',
-          data = {
-              voxels = grid.voxels,
-              width = grid.width,
-              height = grid.height,
-              depth = grid.depth,
-              options = state.options,
-              cameraAngles = {state.cameraAngles.x, state.cameraAngles.y},
-              cameraZoom = state.cameraZoom,
-              camTarget = {state.camTarget.x, state.camTarget.y, state.camTarget.z}
-          }
+          data = data
       }
-  end)
+    end)
+  
+  --[[
+    print("size", #cjson.encode(post));
+    castle.postopened(post);
+  ]]
 
 end
 
@@ -1367,7 +1438,7 @@ function castle.uiupdate()
     
     sceneSectionToggle = ui.section('Scene', {open = sceneSectionToggle}, function()
       
-      uiGridResolution = ui.slider('Grid Resolution', uiGridResolution, 16, 64);
+      uiGridResolution = ui.slider('Grid Resolution', uiGridResolution, 16, 32);
       
       clear = ui.button("Reset Scene");
 
